@@ -1,4 +1,4 @@
-use crate::types::{StringDataItem, DecodedString,Mutf8Error};
+use crate::types::{DecodedString, Mutf8Error, StringDataItem};
 
 pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem {
     let mut cursor = offset;
@@ -12,19 +12,18 @@ pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem {
     }
 }
 
-
 pub fn get_u32_items(dexfile: &[u8], offset: usize, count: usize) -> &[u32] {
     let start_byte = offset;
     let end_byte = offset + (count * size_of::<u32>());
 
     // Ensure we don't go out of bounds
-    assert!(end_byte <= dexfile.len(), "Requested range is out of bounds");
+    assert!(
+        end_byte <= dexfile.len(),
+        "Requested range is out of bounds"
+    );
 
     unsafe {
-        std::slice::from_raw_parts(
-            dexfile[start_byte..end_byte].as_ptr() as *const u32,
-            count
-        )
+        std::slice::from_raw_parts(dexfile[start_byte..end_byte].as_ptr() as *const u32, count)
     }
 }
 
@@ -33,14 +32,12 @@ pub fn get_items<T>(dexfile: &[u8], offset: usize, count: usize) -> &[T] {
     let end_byte = offset + (count * size_of::<T>());
 
     // Ensure we don't go out of bounds
-    assert!(end_byte <= dexfile.len(), "Requested range is out of bounds");
+    assert!(
+        end_byte <= dexfile.len(),
+        "Requested range is out of bounds"
+    );
 
-    unsafe {
-        std::slice::from_raw_parts(
-            dexfile[start_byte..end_byte].as_ptr() as *const T,
-            count
-        )
-    }
+    unsafe { std::slice::from_raw_parts(dexfile[start_byte..end_byte].as_ptr() as *const T, count) }
 }
 
 pub fn decode_mutf8(input: &[u8]) -> DecodedString {
@@ -75,7 +72,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                         string: result,
                         error: Some(Mutf8Error::InvalidSequence(i)),
                     };
-                },
+                }
             }
             i += 2;
         } else if input[i] & 0xF0 == 0xE0 {
@@ -90,21 +87,21 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                     error: Some(Mutf8Error::UnexpectedEndOfInput(i)),
                 };
             }
-            let code_point = (((input[i] & 0x0F) as u32) << 12) | 
-                             (((input[i + 1] & 0x3F) as u32) << 6) | 
-                             ((input[i + 2] & 0x3F) as u32);
+            let code_point = (((input[i] & 0x0F) as u32) << 12)
+                | (((input[i + 1] & 0x3F) as u32) << 6)
+                | ((input[i + 2] & 0x3F) as u32);
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
                 None => {
                     // Try to salvage these bytes as single characters
-                    for j in i..i+3 {
+                    for j in i..i + 3 {
                         result.push(input[j] as char);
                     }
                     return DecodedString {
                         string: result,
                         error: Some(Mutf8Error::InvalidSequence(i)),
                     };
-                },
+                }
             }
             i += 3;
         } else {
@@ -150,4 +147,3 @@ pub fn uleb128_size(value: u32) -> usize {
     }
     size
 }
-

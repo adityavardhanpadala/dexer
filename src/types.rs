@@ -1,43 +1,42 @@
 use bitflags::bitflags;
 
-
 #[repr(C)]
 pub struct StringDataItem<'a> {
     pub size: u16,
-    pub data: &'a [u8]
+    pub data: &'a [u8],
 }
 
 #[repr(C)]
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
-pub struct proto_id_item{
+pub struct proto_id_item {
     pub shorty_idx: u32,
     pub return_type_idx: u32,
-    pub parameters_off: u32
+    pub parameters_off: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
-pub struct field_id_item{
+pub struct field_id_item {
     pub class_idx: u16,
     pub type_idx: u16,
-    pub name_idx: u32
+    pub name_idx: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
-pub struct method_id_item{
+pub struct method_id_item {
     pub class_idx: u16,
     pub type_idx: u16,
-    pub name_idx: u32
+    pub name_idx: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
-pub struct class_def_item{
+pub struct class_def_item {
     pub class_idx: u32,
     pub access_flags: u32,
     pub superclass_idx: u32,
@@ -45,7 +44,7 @@ pub struct class_def_item{
     pub source_file_idx: u32,
     pub annotations_off: u32,
     pub class_data_off: u32,
-    pub static_values_off: u32
+    pub static_values_off: u32,
 }
 
 bitflags! {
@@ -75,30 +74,65 @@ bitflags! {
 
 impl AccessFlags {
     pub fn is_class_flag(self) -> bool {
-        self.intersects(Self::PUBLIC | Self::FINAL | Self::INTERFACE | Self::ABSTRACT | 
-                        Self::SYNTHETIC | Self::ANNOTATION | Self::ENUM)
+        self.intersects(
+            Self::PUBLIC
+                | Self::FINAL
+                | Self::INTERFACE
+                | Self::ABSTRACT
+                | Self::SYNTHETIC
+                | Self::ANNOTATION
+                | Self::ENUM,
+        )
     }
 
     pub fn is_inner_class_flag(self) -> bool {
-        self.intersects(Self::PUBLIC | Self::PRIVATE | Self::PROTECTED | Self::STATIC | 
-                        Self::FINAL | Self::INTERFACE | Self::ABSTRACT | Self::SYNTHETIC | 
-                        Self::ANNOTATION | Self::ENUM)
+        self.intersects(
+            Self::PUBLIC
+                | Self::PRIVATE
+                | Self::PROTECTED
+                | Self::STATIC
+                | Self::FINAL
+                | Self::INTERFACE
+                | Self::ABSTRACT
+                | Self::SYNTHETIC
+                | Self::ANNOTATION
+                | Self::ENUM,
+        )
     }
 
     pub fn is_field_flag(self) -> bool {
-        self.intersects(Self::PUBLIC | Self::PRIVATE | Self::PROTECTED | Self::STATIC | 
-                        Self::FINAL | Self::VOLATILE | Self::TRANSIENT | Self::SYNTHETIC | 
-                        Self::ENUM)
+        self.intersects(
+            Self::PUBLIC
+                | Self::PRIVATE
+                | Self::PROTECTED
+                | Self::STATIC
+                | Self::FINAL
+                | Self::VOLATILE
+                | Self::TRANSIENT
+                | Self::SYNTHETIC
+                | Self::ENUM,
+        )
     }
 
     pub fn is_method_flag(self) -> bool {
-        self.intersects(Self::PUBLIC | Self::PRIVATE | Self::PROTECTED | Self::STATIC | 
-                        Self::FINAL | Self::SYNCHRONIZED | Self::BRIDGE | Self::VARARGS | 
-                        Self::NATIVE | Self::ABSTRACT | Self::STRICT | Self::SYNTHETIC | 
-                        Self::CONSTRUCTOR | Self::DECLARED_SYNCHRONIZED)
+        self.intersects(
+            Self::PUBLIC
+                | Self::PRIVATE
+                | Self::PROTECTED
+                | Self::STATIC
+                | Self::FINAL
+                | Self::SYNCHRONIZED
+                | Self::BRIDGE
+                | Self::VARARGS
+                | Self::NATIVE
+                | Self::ABSTRACT
+                | Self::STRICT
+                | Self::SYNTHETIC
+                | Self::CONSTRUCTOR
+                | Self::DECLARED_SYNCHRONIZED,
+        )
     }
 }
-
 
 #[derive(Debug)]
 pub enum Mutf8Error {
