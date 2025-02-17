@@ -1,17 +1,12 @@
 mod types;
 mod utils;
 
-use core::mem::size_of;
+use color_eyre::eyre::{self, eyre, Context as _};
+#[allow(unused_imports)]
 use log::{debug, error, info, warn};
-use memmap::MmapOptions;
+use memmap::{Mmap, MmapOptions};
 use simple_logger::SimpleLogger;
-use std::{
-    fs::File,
-    hash::Hash,
-    io::{BufRead, BufReader, Read},
-    path::Path,
-    usize,
-};
+use std::{fs::File, io::BufReader, usize};
 
 use types::*;
 use utils::{decode_mutf8, get_items, get_string_data_item, get_u32_items};
@@ -58,15 +53,7 @@ impl Dex<'_> {
     /// Validate dex file and parse it into a Dex struct
     /// # Arguments
     /// * `path` - Path to dex file
-    fn new(path: &String) -> Dex {
-        let f = match File::open(path) {
-            Err(e) => panic!("Error opening file: {}", e),
-            Ok(file) => file,
-        };
-        // Map file to memory to avoid reading the whole file into memory
-        // Should help startup marginally while batch processing multiple APKs
-        let dexfile = unsafe { MmapOptions::new().map(&f).unwrap() };
-
+    fn new(dexfile: &Mmap) -> Dex<'_> {
         info!("Parsing header");
         let header: &Header = Header::new(&dexfile[0..112]);
 
@@ -91,7 +78,7 @@ impl Dex<'_> {
         info!("Parsing strings ids");
 
         let string_id_items = get_u32_items(
-            &dexfile,
+            dexfile,
             header.string_ids_off as usize,
             header.string_ids_size as usize,
         );
@@ -101,8 +88,8 @@ impl Dex<'_> {
         let string_map = string_id_items
             .iter()
             .map(|&item| {
-                let str_vec = get_string_data_item(&dexfile, item as usize);
-                let decoded = decode_mutf8(&str_vec.data);
+                let str_vec = get_string_data_item(dexfile, item as usize);
+                let decoded = decode_mutf8(str_vec.data);
                 (item, decoded.string)
             })
             .collect::<std::collections::HashMap<u32, String>>();
@@ -112,7 +99,7 @@ impl Dex<'_> {
         // Type ids are indexes into string_id_items this type_id string must confirm to
         // TypeDescriptor syntax
         let type_id_items = get_u32_items(
-            &dexfile,
+            dexfile,
             header.type_ids_off as usize,
             header.type_ids_size as usize,
         );
@@ -126,7 +113,7 @@ impl Dex<'_> {
             .collect();
 
         let proto_id_items = get_items::<proto_id_item>(
-            &dexfile,
+            dexfile,
             header.proto_ids_off as usize,
             header.proto_ids_size as usize,
         );
@@ -134,7 +121,7 @@ impl Dex<'_> {
         println!("{:#x?}", proto_id_items[0]);
 
         let field_id_items = get_items::<field_id_item>(
-            &dexfile,
+            dexfile,
             header.field_ids_off as usize,
             header.field_ids_size as usize,
         );
@@ -142,7 +129,7 @@ impl Dex<'_> {
         println!("{:#x?}", field_id_items[0]);
 
         let method_id_items = get_items::<method_id_item>(
-            &dexfile,
+            dexfile,
             header.method_ids_off as usize,
             header.method_ids_size as usize,
         );
@@ -150,39 +137,36 @@ impl Dex<'_> {
         println!("{:#x?}", method_id_items[0]);
 
         let class_def_items = get_items::<class_def_item>(
-            &dexfile,
+            dexfile,
             header.class_defs_off as usize,
             header.class_defs_size as usize,
         );
 
         println!("{:#x?}", class_def_items[0]);
 
-        let call_site_ids = get_items<call_site_item>(
-            &dexfile,
-            header.data_off,
-            header.data_size,
-        );
+        // let call_site_ids =
+        //     get_items::<call_site_item>(&dexfile, header.data_off, header.data_size);
 
         Dex {
-            header: header,
+            header,
             string_ids: string_id_items,
             type_ids: type_id_items,
             proto_ids: proto_id_items,
             field_ids: field_id_items,
             method_ids: method_id_items,
             class_defs: class_def_items,
-            call_site_ids: ,
-            method_handles: (),
-            data: (),
-            link_data: (),
-        }               
+            call_site_ids: &[],
+            method_handles: &[],
+            data: &[],
+            link_data: &[],
+        }
     }
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Dex<'a> {
-    header: Header,
+    header: &'a Header,
     string_ids: &'a [u32],
     type_ids: &'a [u32],
     proto_ids: &'a [proto_id_item],
@@ -195,12 +179,35 @@ struct Dex<'a> {
     link_data: &'a [u8],
 }
 
-fn main() {
+fn mmap_files(fpaths: &[&str]) -> eyre::Result<Vec<Mmap>> {
+    let mut result = Vec::new();
+
+    for fpath in fpaths {
+        let f = File::open(fpath).wrap_err_with(|| eyre!("error opening file"))?;
+        // Map file to memory to avoid reading the whole file into memory
+        // Should help startup marginally while batch processing multiple APKs
+        let dexfile = unsafe { MmapOptions::new().map(&f).unwrap() };
+        result.push(dexfile);
+    }
+
+    Ok(result)
+}
+
+fn main() -> eyre::Result<()> {
     SimpleLogger::new().init().unwrap();
 
     info!("Dexer v0.1.0");
     let args: Vec<String> = std::env::args().collect();
-    let dex = Dex::new(&args[1]);
 
-    print!("{:#?}", dex);
+    // TODO: modify this to pass in a list of files to be mmaped
+    let files = mmap_files(&[&args[1]])?;
+
+    let mut dexes = Vec::new();
+    for f in &files {
+        dexes.push(Dex::new(f));
+    }
+
+    print!("{:#?}", dexes);
+
+    Ok(())
 }
