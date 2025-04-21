@@ -145,3 +145,49 @@ pub struct DecodedString {
     pub string: String,
     pub error: Option<Mutf8Error>,
 }
+
+// Based on https://source.android.com/docs/core/dalvik/dex-format#class-data-item
+// Note: Changed from slices to Vecs to hold owned data after parsing.
+#[derive(Debug)]
+pub struct ClassDataItem {
+    pub static_fields_size: u32,
+    pub instance_fields_size: u32,
+    pub direct_methods_size: u32,
+    pub virtual_methods_size: u32,
+    pub static_fields: Vec<EncodedField>,
+    pub instance_fields: Vec<EncodedField>,
+    pub direct_methods: Vec<EncodedMethod>,
+    pub virtual_methods: Vec<EncodedMethod>,
+}
+
+// Based on https://source.android.com/docs/core/dalvik/dex-format#encoded-field-format
+#[derive(Debug, Clone)] // Added Clone
+#[repr(C)] // repr(C) might not be strictly necessary if we parse field-by-field
+pub struct EncodedField {
+    pub field_idx_diff: u32, // ULEB128
+    pub access_flags: u32,   // ULEB128
+}
+
+// Based on https://source.android.com/docs/core/dalvik/dex-format#encoded-method-format
+#[derive(Debug, Clone)] // Added Clone
+#[repr(C)] // repr(C) might not be strictly necessary if we parse field-by-field
+pub struct EncodedMethod {
+    pub method_idx_diff: u32, // ULEB128
+    pub access_flags: u32,    // ULEB128
+    pub code_off: u32,        // ULEB128: offset to code_item or 0
+}
+
+// Based on https://source.android.com/docs/core/dalvik/dex-format#code-item
+// Note: Changed insns from slice to Vec to hold owned data.
+#[derive(Debug)]
+pub struct CodeItem {
+    pub registers_size: u16,
+    pub ins_size: u16,
+    pub outs_size: u16,
+    pub tries_size: u16,
+    pub debug_info_off: u32,
+    pub insns_size: u32, // size of instructions list, in 16-bit code units
+    pub insns: Vec<u16>, // Actual bytecode instructions (owned Vec)
+                         // Optional try_items, handlers follow if tries_size > 0
+                         // Optional debug_info_item follows instructions
+}
