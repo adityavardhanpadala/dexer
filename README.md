@@ -8,3 +8,8 @@ No frills analysis engine for Dex files.
 cargo run --release -- <dex_file>
 ```
 
+Anti-Features:
+- No bytecode rewriting, instrumentation
+
+
+

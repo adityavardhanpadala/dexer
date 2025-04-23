@@ -115,6 +115,8 @@ pub enum InstructionFormat {
     Format51l,
 }
 
+ 
+
 // --- Opcode Constants (Subset) ---
 // Refer to: https://source.android.com/docs/core/dalvik/dalvik-bytecode
 #[derive(Debug, Copy, Clone, Ord, PartialEq, PartialOrd, Eq)]
@@ -374,6 +376,12 @@ enum Opcode {
     CONST_METHOD_TYPE = 0xff, // Format 21c (const-method-type vAA, method_type@BBBB)
 }
 
+impl From<u8> for Opcode {
+    fn from(value: u8) -> Self {
+        unsafe {std::mem::transmute(value)}
+    }
+}
+
 // TODO(sfx): Instruction to Format and Format to decoder map should make things easy to work with in this scenario.
 
 /// DecoderMap: Maps opcode to a tuple of (Instruction Name, InstructionFormat)
@@ -499,8 +507,8 @@ pub fn disassemble_method(
     while pc < insns.len() {
         let address = pc * 2; // Byte address for display
         let instruction_unit = insns[pc];
-        let opcode = (instruction_unit & 0xFF) as u8; // Low byte is the primary opcode
-
+        let opcode = Opcode::from(instruction_unit as u8); // Low byte is the primary opcode
+        
         let (disassembly, size_units) = match opcode{
             Opcode::NOP => ("nop".to_string(), 1), // Format 10x
             Opcode::MOVE => { // Format 12x: move vA, vB
@@ -548,22 +556,30 @@ pub fn disassemble_method(
             Opcode::CONST_CLASS => { // Format 21c: const-class vAA, type@BBBB
                  if pc + 1 >= insns.len() { ("invalid const-class".to_string(), 1) } else {
                     let v_aa = (instruction_unit >> 8) & 0xFF;
-                    let type_idx = insns[pc + 1] as u32; // Type index is in the next unit
+                    let type_idx = insns[pc + 1] as u16; // Type index is in the next unit
 
-                    // Look up type name from type_map
-                    let type_name = type_map.get(&type_idx)
-                        .map(|s| s.clone()) // Clone the string for display
+                    let type_name = type_map.get(&(type_idx as u32))
+                        .map(|s| s.clone())
                         .unwrap_or_else(|| format!("type@{}", type_idx));
 
                     (format!("const-class v{}, {}", v_aa, type_name), 2)
                  }
             }
             Opcode::RETURN_VOID => ("return-void".to_string(), 1), // Format 10x
+            Opcode::NEW_INSTANCE => { // Format21c
+                let v_aa = (instruction_unit >> 8) & 0xff;
+                let type_idx = insns[pc + 1] as u32;
+
+                let type_name = type_map.get(&type_idx)
+                    .map(|s| s.clone()) // Clone the string for display
+                    .unwrap_or_else(|| format!("type@{}", type_idx));
             
+                (format!("new-instance v{}, {}",v_aa, type_name), 2)
+            } 
             _ => {
                 // For now, just dump the first unit and assume size 1
                 let hex_dump = format!("0x{:04x}", instruction_unit);
-                (format!("??? (opcode 0x{:02x}) {}", opcode, hex_dump), 1)
+                (format!("??? (opcode 0x{:02x}) {}", opcode as u8, hex_dump), 1)
                 
                 
             }
