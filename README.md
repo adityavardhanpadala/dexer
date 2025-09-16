@@ -5,11 +5,8 @@ No frills analysis engine for Dex files.
 
 ### Disassembling full file into a text file.
 ```bash
-cargo run --release -- <dex_file>
+cargo run --release -- <dex_file> --output <filename> --show-stats
 ```
 
 Anti-Features:
 - No bytecode rewriting, instrumentation
-
-
-

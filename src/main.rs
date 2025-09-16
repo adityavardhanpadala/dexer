@@ -3,7 +3,9 @@ mod utils;
 mod disassembler;
 
 use clap::Parser;
-use color_eyre::eyre::{self, eyre, Result, WrapErr};
+use std::error::Error;
+
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use memmap::{Mmap, MmapOptions};
@@ -13,6 +15,7 @@ use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},
     path::PathBuf,
+    time::{Duration, Instant},
     usize,
 };
 
@@ -27,6 +30,63 @@ use utils::{
 use disassembler::disassemble_method;
 
 use adler32;
+
+/// Throughput metrics for instruction processing
+#[derive(Debug, Default)]
+struct Stats {
+    /// Total number of bytecode instructions processed
+    total_instructions: u64,
+    /// Total number of methods processed
+    total_methods: u64,
+    /// Total time spent processing instructions
+    processing_duration: Duration,
+    /// Total bytes of instruction data processed
+    total_instruction_bytes: u64,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn add_method(&mut self, instruction_count: u64, instruction_bytes: u64) {
+        self.total_instructions += instruction_count;
+        self.total_methods += 1;
+        self.total_instruction_bytes += instruction_bytes;
+    }
+
+    fn set_duration(&mut self, duration: Duration) {
+        self.processing_duration = duration;
+    }
+
+    fn calculate_throughput(&self) -> (f64, f64) {
+        let seconds = self.processing_duration.as_secs_f64();
+        if seconds > 0.0 {
+            let instructions_per_second = self.total_instructions as f64 / seconds;
+            let megabytes_per_second = (self.total_instruction_bytes as f64 / 1_000_000.0) / seconds;
+            (instructions_per_second, megabytes_per_second)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    fn report(&self) {
+        info!("=== Instruction Throughput Metrics ===");
+        info!("Total instructions processed: {}", self.total_instructions);
+        info!("Total methods processed: {}", self.total_methods);
+        info!("Total instruction bytes: {}", self.total_instruction_bytes);
+        info!("Processing time: {:.3}s", self.processing_duration.as_secs_f64());
+
+        let (ips, mbps) = self.calculate_throughput();
+        info!("Instructions per second: {:.2}", ips);
+        info!("Megabytes per second: {:.2} MB/s", mbps);
+
+        if self.total_methods > 0 {
+            let avg_instructions_per_method = self.total_instructions as f64 / self.total_methods as f64;
+            info!("Average instructions per method: {:.1}", avg_instructions_per_method);
+        }
+    }
+}
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -43,6 +103,10 @@ struct Cli {
     /// Specific method name to disassemble (e.g., "Lcom/example/MyClass;->myMethod(II)V")
     #[arg(long)]
     method: Option<String>,
+
+    /// Show instruction throughput metrics
+    #[arg(long)]
+    show_stats: bool,
 }
 
 /// Dex Header Struct
@@ -101,7 +165,7 @@ impl Dex<'_> {
             b"dex\n035\0" | b"dex\n036\0" | b"dex\n037\0" | b"dex\n038\0" | b"dex\n039\0" => {
                 info!("Found dex file")
             }
-            _ => return Err(eyre!("Invalid dex magic: {:?}", &header.magic)),
+            _ => return Err(format!("Invalid dex magic: {:?}", &header.magic).into()),
         }
 
         // Verify checksum
@@ -219,7 +283,7 @@ fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
     let mut result = Vec::new();
     for fpath in fpaths {
         let f = File::open(fpath)
-            .wrap_err_with(|| eyre!("error opening file: {}", fpath.display()))?;
+            .map_err(|e| format!("error opening file: {}: {}", fpath.display(), e))?;
         let dexfile = unsafe { MmapOptions::new().map(&f)? };
         result.push(dexfile);
     }
@@ -233,19 +297,20 @@ fn dump_disassembly(
     string_map: &HashMap<u32, String>,
     type_map: &HashMap<u32, String>,
     cli: &Cli,
-) -> Result<()> {
+) -> Result<Stats> {
     let output_path = match &cli.output {
         Some(path) => path,
-        None => return Ok(()),
+        None => return Ok(Stats::new()),
     };
 
     info!("Opening output file for disassembly: {}", output_path.display());
     let output_file = File::create(output_path)
-        .wrap_err_with(|| format!("Failed to create output file: {}", output_path.display()))?;
+        .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))?;
     let mut writer = BufWriter::new(output_file);
 
     info!("Starting disassembly dump...");
 
+    let mut metrics = Stats::new();
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
@@ -274,10 +339,10 @@ fn dump_disassembly(
 
             if let Some(method_id) = dex.method_ids.get(method_id_index) {
                  // Get the actual proto_id_item needed by the utils function
-                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| eyre!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
+                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| format!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
                  // Call the function from utils
                  let method_sig = get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                    .map_err(|e| eyre!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
+                    .map_err(|e| format!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
 
                  let should_disassemble = cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
@@ -286,12 +351,17 @@ fn dump_disassembly(
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) = parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let disassembled = disassemble_method(
+                        let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             string_map,
                             type_map,
                         );
+
+                        // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
+                        let instruction_bytes = code_item.insns.len() * 2;
+                        metrics.add_method(instruction_count, instruction_bytes as u64);
+
                         for line in disassembled {
                             writeln!(writer, "  {}", line)?;
                         }
@@ -318,10 +388,10 @@ fn dump_disassembly(
 
             if let Some(method_id) = dex.method_ids.get(method_id_index) {
                  // Get the actual proto_id_item needed by the utils function
-                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| eyre!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
+                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| format!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
                  // Call the function from utils
                  let method_sig = get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                    .map_err(|e| eyre!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
+                    .map_err(|e| format!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
 
                  let should_disassemble = cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
@@ -330,12 +400,17 @@ fn dump_disassembly(
                      // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) = parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let disassembled = disassemble_method(
+                                            let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             string_map,
                             type_map,
                         );
+                    
+                                            // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
+                                            let instruction_bytes = code_item.insns.len() * 2;
+                                            metrics.add_method(instruction_count, instruction_bytes as u64);
+                    
                         for line in disassembled {
                             writeln!(writer, "  {}", line)?;
                         }
@@ -353,16 +428,15 @@ fn dump_disassembly(
         }
     }
 
-    writer.flush()?; 
+    writer.flush()?;
     info!("Disassembly dump complete: {}", output_path.display());
-    Ok(())
+    Ok(metrics)
 }
 
 
 fn main() -> Result<()> {
 
     SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
-    color_eyre::install()?;
 
     info!("Dexer v0.1.0");
     let cli = Cli::parse();
@@ -379,9 +453,20 @@ fn main() -> Result<()> {
                 info!("Successfully parsed DEX structure.");
                 debug!("{:#?}", dex_struct); // Debug print the structure
 
-                // Attempt to dump disassembly if requested
-                if let Err(e) = dump_disassembly(&dex_struct, first_file, &string_map, &type_map, &cli) {
-                    error!("Failed to dump disassembly: {}", e);
+                // Attempt to dump disassembly if requested with timing measurements
+                let start_time = Instant::now();
+                match dump_disassembly(&dex_struct, first_file, &string_map, &type_map, &cli) {
+                    Ok(mut metrics) => {
+                        let elapsed = start_time.elapsed();
+                        metrics.set_duration(elapsed);
+
+                        if cli.show_stats {
+                            metrics.report();
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to dump disassembly: {}", e);
+                    }
                 }
             }
             Err(e) => {

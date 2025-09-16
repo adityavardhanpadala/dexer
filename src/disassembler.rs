@@ -1,7 +1,5 @@
 use lazy_static::lazy_static;
-use log::debug;
-
-use crate::types::CodeItem; // Removed DecodedString for now
+use crate::types::CodeItem;
 use std::collections::{BTreeMap, HashMap};
 
 /// Dex Instructions are not fixed size so like x86/amd64 we each instruction has a decode format associated with it.
@@ -76,7 +74,7 @@ pub enum InstructionFormat {
     Format21c,
     /// op vAA, vBB, vCC
     Format23x,
-    /// op vAA, vBB, #+CC
+   /// op vAA, vBB, #+CC
     Format22b,
     /// op vA, vB, +CCCC
     Format22t,
@@ -118,6 +116,7 @@ pub enum InstructionFormat {
 
 // --- Opcode Constants (Subset) ---
 // Refer to: https://source.android.com/docs/core/dalvik/dalvik-bytecode
+#[allow(non_camel_case_types)] // This convention looks better for opcodes.
 #[derive(Debug, Copy, Clone, Ord, PartialEq, PartialOrd, Eq)]
 enum Opcode {
     NOP = 0x00,
@@ -653,26 +652,27 @@ lazy_static! {
     static ref FMAP: BTreeMap<Opcode, OpcodeInfo> = get_decoder_map();
 }
 
-// Function for disassembling a method's code
+
 pub fn disassemble_method(
     code_item: &CodeItem,
-    string_ids: &[u32],                // Added: Slice of string ID offsets
-    string_map: &HashMap<u32, String>, // Map<string_id_offset, String>
-    type_map: &HashMap<u32, String>,   // Map<type_id, String>
-                                       // TODO: Add method_map, field_map if needed
-) -> Vec<String> {
+    string_ids: &[u32],
+    string_map: &HashMap<u32, String>,
+    type_map: &HashMap<u32, String>,
+                                       
+) -> (Vec<String>, u64) {
     let mut disassembled_instructions = Vec::new();
-    let insns = &code_item.insns; // Vec<u16>
-    let mut pc: usize = 0; // Program counter in 16-bit code units
+    let insns = &code_item.insns;
+    let mut pc: usize = 0;
+    let mut instruction_count: u64 = 0;
 
     while pc < insns.len() {
-        let address = pc * 2; // Byte address for display
+        instruction_count += 1;
+        let address = pc * 2;
         let instruction_unit = insns[pc];
         let opcode = Opcode::from(instruction_unit as u8); // Low byte is the primary opcode
 
         let (name, format) = match FMAP.get(&opcode) {
-            Some(&(name, format)) => {
-                // Decode the instruction based on its format
+            Some(&(name, format)) => { 
                 (name, format)
             }
             None => ("unknown", InstructionFormat::Format00x),
@@ -747,84 +747,7 @@ pub fn disassemble_method(
             InstructionFormat::Format4rcc => (format!("{}", name, ), 4),
             InstructionFormat::Format51l => (format!("{}", name, ), 5),
         };
-        // let (disassembly, size_units) = match opcode{
-        //     Opcode::NOP => ("nop".to_string(), 1), // Format 10x
-        //     Opcode::MOVE => { // Format 12x: move vA, vB
-        //         let v_a = (instruction_unit >> 8) & 0x0F;
-        //         let v_b = (instruction_unit >> 12) & 0x0F;
-        //         (format!("move v{}, v{}", v_a, v_b), 1)
-        //     }
-        //     Opcode::CONST_4 => { // Format 11n: const/4 vA, #+B
-        //         let v_a = (instruction_unit >> 8) & 0x0F;
-        //         let imm_b = (instruction_unit >> 12) & 0x0F; // This is u16
-        //         // Sign extend the 4-bit value correctly using an intermediate u32
-        //         let imm_b_u32: u32 = if (imm_b & 0x8) != 0 {
-        //             (imm_b as u32) | 0xFFFFFFF0 // Cast imm_b to u32 before OR
-        //         } else {
-        //             imm_b as u32 // Cast the non-negative case too
-        //         };
-        //         let imm_b_signed = imm_b_u32 as i32; // Final cast to i32
-        //         (format!("const/4 v{}, #{}", v_a, imm_b_signed), 1)
-        //     }
-        //     Opcode::CONST_16 => { // Format 21s: const/16 vAA, #+BBBB
-        //         if pc + 1 >= insns.len() { ("invalid const/16".to_string(), 1) } else {
-        //             let v_aa = (instruction_unit >> 8) & 0xFF;
-        //             let imm_bbbb = insns[pc + 1] as i16; // Read next unit as signed 16-bit literal
-        //             (format!("const/16 v{}, #{}", v_aa, imm_bbbb), 2)
-        //         }
-        //     }
-        //     Opcode::CONST_STRING => { // Format 21c: const-string vAA, string@BBBB
-        //          if pc + 1 >= insns.len() { ("invalid const-string".to_string(), 1) } else {
-        //             let v_aa = (instruction_unit >> 8) & 0xFF;
-        //             let string_table_idx = insns[pc + 1] as usize; // Index into string_ids table
-        //
-        //             // Look up the string offset from string_ids, then the string from string_map
-        //             let string_val = if string_table_idx < string_ids.len() {
-        //                 let string_offset = string_ids[string_table_idx];
-        //                 string_map.get(&string_offset)
-        //                     .map(|s| format!("\"{}\"", s.escape_debug())) // Format string literal
-        //                     .unwrap_or_else(|| format!("string@(invalid_offset:0x{:x})", string_offset))
-        //             } else {
-        //                 format!("string@(invalid_index:{})", string_table_idx)
-        //             };
-        //
-        //             (format!("const-string v{}, {}", v_aa, string_val), 2)
-        //          }
-        //     }
-        //     Opcode::CONST_CLASS => { // Format 21c: const-class vAA, type@BBBB
-        //          if pc + 1 >= insns.len() { ("invalid const-class".to_string(), 1) } else {
-        //             let v_aa = (instruction_unit >> 8) & 0xFF;
-        //             let type_idx = insns[pc + 1] as u16; // Type index is in the next unit
-        //
-        //             let type_name = type_map.get(&(type_idx as u32))
-        //                 .map(|s| s.clone())
-        //                 .unwrap_or_else(|| format!("type@{}", type_idx));
-        //
-        //             (format!("const-class v{}, {}", v_aa, type_name), 2)
-        //          }
-        //     }
-        //     Opcode::RETURN_VOID => ("return-void".to_string(), 1), // Format 10x
-        //     Opcode::NEW_INSTANCE => { // Format21c
-        //         let v_aa = (instruction_unit >> 8) & 0xff;
-        //         let type_idx = insns[pc + 1] as u32;
-        //
-        //         let type_name = type_map.get(&type_idx)
-        //             .map(|s| s.clone()) // Clone the string for display
-        //             .unwrap_or_else(|| format!("type@{}", type_idx));
-        //
-        //         (format!("new-instance v{}, {}",v_aa, type_name), 2)
-        //     }
-        //     _ => {
-        //         // For now, just dump the first unit and assume size 1
-        //         let hex_dump = format!("0x{:04x}", instruction_unit);
-        //         (format!("??? (opcode 0x{:02x}) {}", opcode as u8, hex_dump), 1)
-        //
-        //
-        //     }
-        //};
 
-        // Ensure PC doesn't advance beyond the instruction buffer if an instruction claimed
-        // more units than available (e.g., due to truncated data)
         if pc + size_units > insns.len() {
             let formatted_line = format!(
                 "0x{:04x}: {} (Error: instruction truncated)",
@@ -837,13 +760,9 @@ pub fn disassemble_method(
         let formatted_line = format!("0x{:04x}: {}", address, disassembly);
         disassembled_instructions.push(formatted_line);
 
-        // Advance PC by the size of the instruction in 16-bit units
         pc += size_units;
     }
 
-    disassembled_instructions
+    (disassembled_instructions, instruction_count)
 }
 
-// TODO: Add opcode handlers
-// TODO: Add helper functions for parsing different instruction formats (21c, 35c, etc.)
-// TODO: Implement index resolution (strings, types, fields, methods)
