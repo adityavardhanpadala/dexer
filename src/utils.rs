@@ -1,6 +1,12 @@
 use crate::types::{
-    ClassDataItem, CodeItem, DecodedString, EncodedField, EncodedMethod, Mutf8Error,
-    StringDataItem, proto_id_item, // Added proto_id_item
+    ClassDataItem,
+    CodeItem,
+    DecodedString,
+    EncodedField,
+    EncodedMethod,
+    Mutf8Error,
+    StringDataItem,
+    proto_id_item, // Added proto_id_item
 };
 use std::mem::size_of;
 
@@ -314,7 +320,6 @@ pub fn parse_code_item(dexfile: &[u8], offset: usize) -> (CodeItem, usize) {
 
     // TODO: Parse try_items and encoded_catch_handler_list if tries_size > 0
     // For now, we just calculate the total size including potential padding and skip them
-
     let code_item = CodeItem {
         registers_size,
         ins_size,
@@ -349,20 +354,24 @@ pub fn get_method_signature(
     type_ids: &[u32],
 ) -> Result<String, String> {
     // --- Get Return Type ---
-    let return_type_string_idx = *type_ids.get(proto_item.return_type_idx as usize).ok_or_else(|| {
-        format!(
-            "Return type index {} out of bounds for type_ids (len {})",
-            proto_item.return_type_idx,
-            type_ids.len()
-        )
-    })?;
-    let return_type_offset = *string_ids.get(return_type_string_idx as usize).ok_or_else(|| {
-        format!(
-            "Return type string index {} out of bounds for string_ids (len {})",
-            return_type_string_idx,
-            string_ids.len()
-        )
-    })?;
+    let return_type_string_idx = *type_ids
+        .get(proto_item.return_type_idx as usize)
+        .ok_or_else(|| {
+            format!(
+                "Return type index {} out of bounds for type_ids (len {})",
+                proto_item.return_type_idx,
+                type_ids.len()
+            )
+        })?;
+    let return_type_offset = *string_ids
+        .get(return_type_string_idx as usize)
+        .ok_or_else(|| {
+            format!(
+                "Return type string index {} out of bounds for string_ids (len {})",
+                return_type_string_idx,
+                string_ids.len()
+            )
+        })?;
     let return_type_sdi = get_string_data_item(dexfile, return_type_offset as usize);
     let decoded_return_type = decode_mutf8(return_type_sdi.data);
     if let Some(err) = decoded_return_type.error {
@@ -376,7 +385,10 @@ pub fn get_method_signature(
         let params_offset = proto_item.parameters_off as usize;
         // Read the size (u32) of the type_list
         if params_offset + size_of::<u32>() > dexfile.len() {
-             return Err(format!("Parameter list offset {} points past end of file", params_offset));
+            return Err(format!(
+                "Parameter list offset {} points past end of file",
+                params_offset
+            ));
         }
         let size_bytes = &dexfile[params_offset..params_offset + size_of::<u32>()];
         let size = u32::from_le_bytes(size_bytes.try_into().unwrap()); // Safe unwrap due to length check
@@ -393,13 +405,15 @@ pub fn get_method_signature(
                         type_ids.len()
                     )
                 })?;
-                let param_type_offset = *string_ids.get(param_type_string_idx as usize).ok_or_else(|| {
-                    format!(
-                        "Parameter type string index {} out of bounds for string_ids (len {})",
-                        param_type_string_idx,
-                        string_ids.len()
-                    )
-                })?;
+                let param_type_offset = *string_ids
+                    .get(param_type_string_idx as usize)
+                    .ok_or_else(|| {
+                        format!(
+                            "Parameter type string index {} out of bounds for string_ids (len {})",
+                            param_type_string_idx,
+                            string_ids.len()
+                        )
+                    })?;
                 let param_sdi = get_string_data_item(dexfile, param_type_offset as usize);
                 let decoded_param = decode_mutf8(param_sdi.data);
                 if let Some(err) = decoded_param.error {

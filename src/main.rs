@@ -1,6 +1,6 @@
+mod disassembler;
 mod types;
 mod utils;
-mod disassembler;
 
 use clap::Parser;
 use std::error::Error;
@@ -19,15 +19,14 @@ use std::{
     usize,
 };
 
+use disassembler::disassemble_method;
 use types::{
-    class_def_item, field_id_item, method_id_item, proto_id_item,
-    ClassDataItem, CodeItem,
+    ClassDataItem, CodeItem, class_def_item, field_id_item, method_id_item, proto_id_item,
 };
 use utils::{
-    decode_mutf8, get_items, get_string_data_item, get_u32_items, parse_class_data_item,
-    parse_code_item, get_method_signature,
+    decode_mutf8, get_items, get_method_signature, get_string_data_item, get_u32_items,
+    parse_class_data_item, parse_code_item,
 };
-use disassembler::disassemble_method;
 
 use adler32;
 
@@ -63,7 +62,8 @@ impl Stats {
         let seconds = self.processing_duration.as_secs_f64();
         if seconds > 0.0 {
             let instructions_per_second = self.total_instructions as f64 / seconds;
-            let megabytes_per_second = (self.total_instruction_bytes as f64 / 1_000_000.0) / seconds;
+            let megabytes_per_second =
+                (self.total_instruction_bytes as f64 / 1_000_000.0) / seconds;
             (instructions_per_second, megabytes_per_second)
         } else {
             (0.0, 0.0)
@@ -75,15 +75,22 @@ impl Stats {
         info!("Total instructions processed: {}", self.total_instructions);
         info!("Total methods processed: {}", self.total_methods);
         info!("Total instruction bytes: {}", self.total_instruction_bytes);
-        info!("Processing time: {:.3}s", self.processing_duration.as_secs_f64());
+        info!(
+            "Processing time: {:.3}s",
+            self.processing_duration.as_secs_f64()
+        );
 
         let (ips, mbps) = self.calculate_throughput();
         info!("Instructions per second: {:.2}", ips);
         info!("Megabytes per second: {:.2} MB/s", mbps);
 
         if self.total_methods > 0 {
-            let avg_instructions_per_method = self.total_instructions as f64 / self.total_methods as f64;
-            info!("Average instructions per method: {:.1}", avg_instructions_per_method);
+            let avg_instructions_per_method =
+                self.total_instructions as f64 / self.total_methods as f64;
+            info!(
+                "Average instructions per method: {:.1}",
+                avg_instructions_per_method
+            );
         }
     }
 }
@@ -193,7 +200,10 @@ impl Dex<'_> {
                 let decoded = decode_mutf8(str_data_item.data);
                 // Log decoding errors if any
                 if let Some(err) = decoded.error {
-                    warn!("MUTF-8 decoding error at offset 0x{:x}: {:?}", item_offset, err);
+                    warn!(
+                        "MUTF-8 decoding error at offset 0x{:x}: {:?}",
+                        item_offset, err
+                    );
                 }
                 (item_offset, decoded.string) // Map original offset to string
             })
@@ -210,8 +220,9 @@ impl Dex<'_> {
             .iter()
             .enumerate()
             .filter_map(|(type_id, &string_id_idx)| {
-                string_map.get(&string_id_idx)
-                          .map(|s| (type_id as u32, s.clone()))
+                string_map
+                    .get(&string_id_idx)
+                    .map(|s| (type_id as u32, s.clone()))
             })
             .collect::<HashMap<u32, String>>();
 
@@ -242,7 +253,6 @@ impl Dex<'_> {
             header.class_defs_off as usize,
             header.class_defs_size as usize,
         );
-
 
         let dex_struct = Dex {
             header,
@@ -303,9 +313,17 @@ fn dump_disassembly(
         None => return Ok(Stats::new()),
     };
 
-    info!("Opening output file for disassembly: {}", output_path.display());
-    let output_file = File::create(output_path)
-        .map_err(|e| format!("Failed to create output file {}: {}", output_path.display(), e))?;
+    info!(
+        "Opening output file for disassembly: {}",
+        output_path.display()
+    );
+    let output_file = File::create(output_path).map_err(|e| {
+        format!(
+            "Failed to create output file {}: {}",
+            output_path.display(),
+            e
+        )
+    })?;
     let mut writer = BufWriter::new(output_file);
 
     info!("Starting disassembly dump...");
@@ -314,7 +332,10 @@ fn dump_disassembly(
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = type_map.get(&class_def.class_idx).cloned().unwrap_or_else(|| format!("UnknownClass{}", i));
+        let class_name = type_map
+            .get(&class_def.class_idx)
+            .cloned()
+            .unwrap_or_else(|| format!("UnknownClass{}", i));
         writeln!(writer, "\n# Class: {}", class_name)?;
 
         if class_def.class_data_off == 0 {
@@ -323,12 +344,16 @@ fn dump_disassembly(
         }
 
         if (class_def.class_data_off as usize) >= dexfile.len() {
-             warn!("Class data_off 0x{:x} is out of bounds for class {}", class_def.class_data_off, class_name);
-             writeln!(writer, "# (Error: Class data offset out of bounds)")?;
-             continue;
+            warn!(
+                "Class data_off 0x{:x} is out of bounds for class {}",
+                class_def.class_data_off, class_name
+            );
+            writeln!(writer, "# (Error: Class data offset out of bounds)")?;
+            continue;
         }
 
-        let (class_data, _bytes_read) = parse_class_data_item(dexfile, class_def.class_data_off as usize);
+        let (class_data, _bytes_read) =
+            parse_class_data_item(dexfile, class_def.class_data_off as usize);
 
         // --- Process Direct Methods ---
         method_idx_counter = 0; // Reset for direct methods
@@ -338,19 +363,39 @@ fn dump_disassembly(
             let method_id_index = method_idx_counter as usize;
 
             if let Some(method_id) = dex.method_ids.get(method_id_index) {
-                 // Get the actual proto_id_item needed by the utils function
-                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| format!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
-                 // Call the function from utils
-                 let method_sig = get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                    .map_err(|e| format!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
+                // Get the actual proto_id_item needed by the utils function
+                let proto_item =
+                    dex.proto_ids
+                        .get(method_id.type_idx as usize)
+                        .ok_or_else(|| {
+                            format!(
+                                "Proto ID index {} out of bounds for method index {}",
+                                method_id.type_idx, method_id_index
+                            )
+                        })?;
+                // Call the function from utils
+                let method_sig =
+                    get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
+                        .map_err(|e| {
+                            format!(
+                                "Failed to get method signature for method index {}: {}",
+                                method_id_index, e
+                            )
+                        })?;
 
-                 let should_disassemble = cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
+                let should_disassemble =
+                    cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
-                 if should_disassemble && encoded_method.code_off != 0 {
-                    writeln!(writer, "\n### Method: {} (Index: {}, Code Offset: 0x{:x})", method_sig, method_id_index, encoded_method.code_off)?;
+                if should_disassemble && encoded_method.code_off != 0 {
+                    writeln!(
+                        writer,
+                        "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
+                        method_sig, method_id_index, encoded_method.code_off
+                    )?;
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
-                        let (code_item, _code_bytes_read) = parse_code_item(dexfile, encoded_method.code_off as usize);
+                        let (code_item, _code_bytes_read) =
+                            parse_code_item(dexfile, encoded_method.code_off as usize);
                         let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
@@ -366,64 +411,111 @@ fn dump_disassembly(
                             writeln!(writer, "  {}", line)?;
                         }
                     } else {
-                        warn!("Method code_off 0x{:x} is out of bounds for {}", encoded_method.code_off, method_sig);
+                        warn!(
+                            "Method code_off 0x{:x} is out of bounds for {}",
+                            encoded_method.code_off, method_sig
+                        );
                         writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
-                 } else if should_disassemble {
-                     writeln!(writer, "\n### Method: {} (Index: {}, Abstract or Native)", method_sig, method_id_index)?;
-                 }
-
+                } else if should_disassemble {
+                    writeln!(
+                        writer,
+                        "\n### Method: {} (Index: {}, Abstract or Native)",
+                        method_sig, method_id_index
+                    )?;
+                }
             } else {
-                 warn!("Invalid method_id_index {} derived for class {}", method_id_index, class_name);
-                 writeln!(writer, "# (Error: Invalid method index {})", method_id_index)?;
+                warn!(
+                    "Invalid method_id_index {} derived for class {}",
+                    method_id_index, class_name
+                );
+                writeln!(
+                    writer,
+                    "# (Error: Invalid method index {})",
+                    method_id_index
+                )?;
             }
         }
 
         // --- Process Virtual Methods ---
         method_idx_counter = 0; // Reset for virtual methods
         writeln!(writer, "\n## Virtual Methods:")?;
-         for encoded_method in &class_data.virtual_methods {
+        for encoded_method in &class_data.virtual_methods {
             method_idx_counter = method_idx_counter.wrapping_add(encoded_method.method_idx_diff); // Accumulate diff
             let method_id_index = method_idx_counter as usize;
 
             if let Some(method_id) = dex.method_ids.get(method_id_index) {
-                 // Get the actual proto_id_item needed by the utils function
-                 let proto_item = dex.proto_ids.get(method_id.type_idx as usize).ok_or_else(|| format!("Proto ID index {} out of bounds for method index {}", method_id.type_idx, method_id_index))?;
-                 // Call the function from utils
-                 let method_sig = get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                    .map_err(|e| format!("Failed to get method signature for method index {}: {}", method_id_index, e))?;
+                // Get the actual proto_id_item needed by the utils function
+                let proto_item =
+                    dex.proto_ids
+                        .get(method_id.type_idx as usize)
+                        .ok_or_else(|| {
+                            format!(
+                                "Proto ID index {} out of bounds for method index {}",
+                                method_id.type_idx, method_id_index
+                            )
+                        })?;
+                // Call the function from utils
+                let method_sig =
+                    get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
+                        .map_err(|e| {
+                            format!(
+                                "Failed to get method signature for method index {}: {}",
+                                method_id_index, e
+                            )
+                        })?;
 
-                 let should_disassemble = cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
+                let should_disassemble =
+                    cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
-                 if should_disassemble && encoded_method.code_off != 0 {
-                    writeln!(writer, "\n### Method: {} (Index: {}, Code Offset: 0x{:x})", method_sig, method_id_index, encoded_method.code_off)?;
-                     // Ensure code offset is within bounds
+                if should_disassemble && encoded_method.code_off != 0 {
+                    writeln!(
+                        writer,
+                        "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
+                        method_sig, method_id_index, encoded_method.code_off
+                    )?;
+                    // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
-                        let (code_item, _code_bytes_read) = parse_code_item(dexfile, encoded_method.code_off as usize);
-                                            let (disassembled, instruction_count) = disassemble_method(
+                        let (code_item, _code_bytes_read) =
+                            parse_code_item(dexfile, encoded_method.code_off as usize);
+                        let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             string_map,
                             type_map,
                         );
-                    
-                                            // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
-                                            let instruction_bytes = code_item.insns.len() * 2;
-                                            metrics.add_method(instruction_count, instruction_bytes as u64);
-                    
+
+                        // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
+                        let instruction_bytes = code_item.insns.len() * 2;
+                        metrics.add_method(instruction_count, instruction_bytes as u64);
+
                         for line in disassembled {
                             writeln!(writer, "  {}", line)?;
                         }
                     } else {
-                        warn!("Method code_off 0x{:x} is out of bounds for {}", encoded_method.code_off, method_sig);
+                        warn!(
+                            "Method code_off 0x{:x} is out of bounds for {}",
+                            encoded_method.code_off, method_sig
+                        );
                         writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
-                 } else if should_disassemble {
-                     writeln!(writer, "\n### Method: {} (Index: {}, Abstract or Native)", method_sig, method_id_index)?;
-                 }
+                } else if should_disassemble {
+                    writeln!(
+                        writer,
+                        "\n### Method: {} (Index: {}, Abstract or Native)",
+                        method_sig, method_id_index
+                    )?;
+                }
             } else {
-                 warn!("Invalid method_id_index {} derived for class {}", method_id_index, class_name);
-                 writeln!(writer, "# (Error: Invalid method index {})", method_id_index)?;
+                warn!(
+                    "Invalid method_id_index {} derived for class {}",
+                    method_id_index, class_name
+                );
+                writeln!(
+                    writer,
+                    "# (Error: Invalid method index {})",
+                    method_id_index
+                )?;
             }
         }
     }
@@ -433,10 +525,11 @@ fn dump_disassembly(
     Ok(metrics)
 }
 
-
 fn main() -> Result<()> {
-
-    SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
+    SimpleLogger::new()
+        .with_level(log::LevelFilter::Info)
+        .init()
+        .unwrap();
 
     info!("Dexer v0.1.0");
     let cli = Cli::parse();
