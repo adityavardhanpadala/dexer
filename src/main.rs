@@ -165,6 +165,9 @@ struct Dex<'a> {
     method_handles: &'a [u8],
     data: &'a [u8],
     link_data: &'a [u8],
+
+    string_map: HashMap<u32, String>,
+    type_map: HashMap<u32, String>,
 }
 
 impl Dex<'_> {
@@ -172,7 +175,7 @@ impl Dex<'_> {
     /// # Arguments
     /// * `dexfile` - Memory mapped dex file
     /// Returns the Dex struct, string map, and type map
-    fn new(dexfile: &Mmap) -> Result<(Dex<'_>, HashMap<u32, String>, HashMap<u32, String>)> {
+    fn new(dexfile: &Mmap) -> Result<Dex<'_>> {
         info!("Parsing header");
         let header: &Header = Header::new(&dexfile[0..112]);
 
@@ -276,9 +279,12 @@ impl Dex<'_> {
             method_handles: &[],
             data: &[],
             link_data: &[],
+
+            string_map,
+            type_map,
         };
 
-        Ok((dex_struct, string_map, type_map))
+        Ok(dex_struct)
     }
 }
 
@@ -290,15 +296,13 @@ fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
         let dexfile = unsafe { MmapOptions::new().map(&f)? };
         result.push(dexfile);
     }
-    return Ok(result);
+    Ok(result)
 }
 
 /// Dumps the disassembly of methods to a file or stdout based on CLI args.
 fn dump_disassembly(
     dex: &Dex,
-    dexfile: &Mmap, // The raw memory-mapped file data
-    string_map: &HashMap<u32, String>,
-    type_map: &HashMap<u32, String>,
+    dexfile: &Mmap,
     cli: &Cli,
 ) -> Result<Stats> {
     let output_path = match &cli.output {
@@ -325,7 +329,7 @@ fn dump_disassembly(
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = type_map
+        let class_name = dex.type_map
             .get(&class_def.class_idx)
             .cloned()
             .unwrap_or_else(|| format!("UnknownClass{}", i));
@@ -392,8 +396,8 @@ fn dump_disassembly(
                         let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
-                            string_map,
-                            type_map,
+                            &dex.string_map,
+                            &dex.type_map,
                         );
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
@@ -474,8 +478,8 @@ fn dump_disassembly(
                         let (disassembled, instruction_count) = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
-                            string_map,
-                            type_map,
+                            &dex.string_map,
+                            &dex.type_map,
                         );
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
@@ -535,12 +539,12 @@ fn main() -> Result<()> {
     if let Some(first_file) = files.first() {
         info!("--- Processing first file for potential disassembly ---");
         match Dex::new(first_file) {
-            Ok((dex_struct, string_map, type_map)) => {
+            Ok(dex_struct) => {
                 info!("Successfully parsed DEX structure.");
 
                 // Attempt to dump disassembly if requested with timing measurements
                 let start_time = Instant::now();
-                match dump_disassembly(&dex_struct, first_file, &string_map, &type_map, &cli) {
+                match dump_disassembly(&dex_struct, first_file, &cli) {
                     Ok(mut metrics) => {
                         let elapsed = start_time.elapsed();
                         metrics.set_duration(elapsed);

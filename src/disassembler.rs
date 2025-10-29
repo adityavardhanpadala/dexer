@@ -895,23 +895,52 @@ pub fn disassemble_method(
                 (format!("{} {}", name, literal), 2)
             }
             InstructionFormat::Format20bc => {
-                // op vAA, vBBBB
+                // op vAA, kind@BBBB
                 let v_aa = (instruction_unit >> 8) & 0x0F;
-                let v_bbbb = insns[pc + 1];
-                (format!("{} v{}, v{}", name, v_aa, v_bbbb), 2)
+                let k_bbbb = insns[pc + 1];
+                (format!("{} v{}, kind_{}", name, v_aa, k_bbbb), 2)
             }
             InstructionFormat::Format22x => {
-                // op vAA, +BBBB
+                // op vAA, vBBBB
                 let v_a = (instruction_unit >> 8) & 0x0F;
-                // sign extend 32 bits
-                let imm = insns[pc + 1] as i32;
-                (format!("{} v{}, #+{}", name, v_a, imm), 2)
+                let v_bbbb = insns[pc + 1];
+                (format!("{} v{}, v{}", name, v_a, v_bbbb), 2)
             }
-            InstructionFormat::Format21t => (format!("{}", name,), 2),
-            InstructionFormat::Format21s => (format!("{}", name,), 2),
-            InstructionFormat::Format21h => (format!("{}", name,), 2),
-            InstructionFormat::Format21c => (format!("{}", name,), 2),
-            InstructionFormat::Format23x => (format!("{}", name,), 2),
+            InstructionFormat::Format21t => {
+                // op vAA, +BBBB
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let imm = insns[pc + 1];
+                (format!("{} v{}, +{}", name, v_aa, imm), 2)
+            },
+            InstructionFormat::Format21s => {
+                // op vAA, #+BBBB
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let imm = insns[pc + 1];
+                (format!("{} v{}, #+{}", name, v_aa, imm), 2)
+            },
+            InstructionFormat::Format21h => {
+                // op vAA, #+BBBB0000
+                // op vAA, #+BBBB000000000000
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let imm = insns[pc + 1];
+                (format!("{} v{}, #+{}", name, v_aa, imm), 2)
+            },
+            InstructionFormat::Format21c => {
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let bbbb = insns[pc + 1];
+
+                (format!("{} v{}, <type,field,met,proto,string>@{}", name, v_aa, bbbb), 2)
+            },
+            InstructionFormat::Format23x => {
+                // byte 1 AA|op
+                // byte 2 CC|BB
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_bb = insns[pc + 1] >> 8;
+                let v_cc = insns[pc + 1] & 0xFF;
+
+                (format!("{} v{}, v{}, v{}", name, v_aa, v_bb, v_cc), 2)
+
+            },
             InstructionFormat::Format22b => (format!("{}", name,), 2),
             InstructionFormat::Format22t => (format!("{}", name,), 2),
             InstructionFormat::Format22s => (format!("{}", name,), 2),
