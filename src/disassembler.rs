@@ -738,14 +738,14 @@ pub fn disassemble_method(
                 // the register ids start from cccc to cccc + v_a -1
                 let mut registers = Vec::with_capacity(v_a as usize);
                 for i in 1..v_a {
-                    let reg_id = insns[pc + 2 + (i as usize)];
+                    // let _reg_id = insns[pc + 1 + (i as usize)];
                     registers.push(format!("v{}", cccc + i));
                 }
 
                 let registers_str = registers.join(", ");
                 (
                     format!("{} {{{}}}, <meth,site,type>@{}", name, registers_str, bbbb),
-                    3 + (v_a as usize - 1),
+                    3 + (v_a as usize),
                 )
             }
             InstructionFormat::Format3rms => {
