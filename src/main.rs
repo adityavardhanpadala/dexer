@@ -20,9 +20,7 @@ use std::{
 };
 
 use disassembler::disassemble_method;
-use types::{
-    ClassDataItem, CodeItem, class_def_item, field_id_item, method_id_item, proto_id_item,
-};
+use types::{class_def_item, field_id_item, method_id_item, proto_id_item};
 use utils::{
     decode_mutf8, get_items, get_method_signature, get_string_data_item, get_u32_items,
     parse_class_data_item, parse_code_item,
@@ -118,6 +116,7 @@ struct Cli {
 
 /// Dex Header Struct
 /// Size : 112 bytes
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct Header {
     magic: [u8; 8],
@@ -208,7 +207,10 @@ impl Dex<'_> {
             .iter()
             .map(|&item_offset| {
                 let str_data_item = get_string_data_item(dexfile, item_offset as usize);
-                debug!("String data item: {:?} len: {:?}",str_data_item, str_data_item.size);
+                debug!(
+                    "String data item: {:?} len: {:?}",
+                    str_data_item, str_data_item.size
+                );
                 let decoded = decode_mutf8(str_data_item.data);
                 // Log decoding errors if any
                 if let Some(err) = decoded.error {
@@ -300,11 +302,7 @@ fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
 }
 
 /// Dumps the disassembly of methods to a file or stdout based on CLI args.
-fn dump_disassembly(
-    dex: &Dex,
-    dexfile: &Mmap,
-    cli: &Cli,
-) -> Result<Stats> {
+fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
     let output_path = match &cli.output {
         Some(path) => path,
         None => return Ok(Stats::new()),
@@ -329,7 +327,8 @@ fn dump_disassembly(
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = dex.type_map
+        let class_name = dex
+            .type_map
             .get(&class_def.class_idx)
             .cloned()
             .unwrap_or_else(|| format!("UnknownClass{}", i));

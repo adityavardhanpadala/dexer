@@ -9,8 +9,8 @@ use crate::types::{
     proto_id_item, // Added proto_id_item
 };
 
-use log::{debug, error, info, warn};
-use std::{char::REPLACEMENT_CHARACTER, mem::size_of};
+use log::debug;
+use std::mem::size_of;
 
 pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem<'_> {
     let mut cursor = offset;

@@ -1,7 +1,6 @@
 use crate::types::CodeItem;
-use lazy_static::lazy_static;
-use log::{debug, info, warn};
-use std::collections::{BTreeMap, HashMap};
+use log::warn;
+use std::collections::HashMap;
 
 /// Dex Instructions are not fixed size so like x86/amd64 we each instruction has a decode format associated with it.
 // --- Instruction Formats ---
@@ -815,6 +814,5 @@ pub fn disassemble_method(
 
         pc += size_units;
     }
-
     (disassembled_instructions, instruction_count)
 }
