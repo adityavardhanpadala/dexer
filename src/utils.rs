@@ -71,7 +71,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             result.push(input[i] as char);
             i += 1;
         // Check if the byte is in range for 2 byte encodings.
-        } else if input[i] >= 0xC0 && input[i] < 0xE0  {
+        } else if input[i] >= 0xC0 && input[i] < 0xE0 {
             // 2-byte sequence
             if i + 1 >= input.len() {
                 // Try to salvage the last byte as a single character
@@ -85,7 +85,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             // Validate the second byte of the sequence i.e of the format
             // 10yyyyyy so we mask with 0xc0(0b11000000) to isolate 2 high bits
             // and make sure it is 0x80(0b10000000)
-            if input[i+1] & 0xc0 != 0x80 {
+            if input[i + 1] & 0xc0 != 0x80 {
                 result.push(input[i] as char);
                 i += 1;
                 continue;
@@ -98,7 +98,6 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                 continue;
             }
 
-
             let code_point = (((input[i] & 0x1F) as u32) << 6) | ((input[i + 1] & 0x3F) as u32);
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
@@ -106,7 +105,12 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                     // Try to salvage these bytes as single characters
                     result.push(input[i] as char);
                     result.push(input[i + 1] as char);
-                    debug!("Invalid 2-byte sequence at {}: {:02x} {:02x}", i, input[i], input[i + 1]);
+                    debug!(
+                        "Invalid 2-byte sequence at {}: {:02x} {:02x}",
+                        i,
+                        input[i],
+                        input[i + 1]
+                    );
                 }
             }
             i += 2;
@@ -136,7 +140,6 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             let code_point = (((input[i] & 0x0F) as u32) << 12)
                 | (((input[i + 1] & 0x3F) as u32) << 6)
                 | ((input[i + 2] & 0x3F) as u32);
-
 
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
@@ -189,16 +192,6 @@ pub fn read_uleb128(input: &[u8]) -> (u32, usize) {
     }
 
     (result, bytes_read)
-}
-
-pub fn uleb128_size(value: u32) -> usize {
-    let mut size = 1;
-    let mut val = value;
-    while val >= 128 {
-        size += 1;
-        val >>= 7;
-    }
-    size
 }
 
 // Helper function to read a slice of u16 values

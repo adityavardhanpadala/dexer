@@ -1,5 +1,6 @@
 use crate::types::CodeItem;
 use lazy_static::lazy_static;
+use log::{debug, info, warn};
 use std::collections::{BTreeMap, HashMap};
 
 /// Dex Instructions are not fixed size so like x86/amd64 we each instruction has a decode format associated with it.
@@ -21,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 // | `B|A|op CC`                            | 21c       | `op vAA, type@BBBB` / `op vAA, field@BBBB`                                                     |
 // |                                        |           |  / `op vAA, method_handle@BBBB` / `op vAA, proto@BBBB` / `op vAA, string@BBBB` |               |
 // | `AA|op CC|BB`                          | 23x       | `op vAA, vBB, vCC`                                                                             |
-// | `22b`                                  | 22b       | `op vAA, vBB, #+CC`                                                                            |
+// | `AA|op CC|BB`                          | 22b       | `op vAA, vBB, #+CC`                                                                            |
 // | `B|A|op CCCC`                          | 22t       | `op vA, vB, +CCCC`                                                                             |
 // | `B|A|op CCCC`                          | 22s       | `op vA, vB, #+CCCC`                                                                            |
 // | `B|A|op CCCC`                          | 22c       | `op vA, vB, type@CCCC` / `op vA, vB, field@CCCC`                                               |
@@ -76,7 +77,7 @@ pub enum InstructionFormat {
     Format23x,
     /// op vAA, vBB, #+CC
     Format22b,
-    /// op vA, vB, +CCCC
+    // op vA, vB, #+CC
     Format22t,
     /// op vA, vB, #+CCCC
     Format22s,
@@ -134,7 +135,10 @@ macro_rules! declare_opcodes {
                     $(
                         $value => Some(Opcode::$name),
                     )*
-                    _ => None,
+                    _ => {
+                        warn!("Unknown Opcode byte: 0x{:02x}", byte);
+                        None
+                    },
                 }
             }
 
@@ -402,7 +406,8 @@ pub fn disassemble_method(
         instruction_count += 1;
         let address = pc * 2;
         let instruction_unit = insns[pc];
-        let opcode = Opcode::from_byte(instruction_unit as u8).expect("Illegal instruction"); // Low byte is the primary opcode
+        let opcode = Opcode::from_byte(instruction_unit as u8) // Low byte is the primary opcode
+            .expect("Unknown opcode found");
 
         let name = opcode.name();
         let format = opcode.format();
@@ -486,28 +491,314 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0x0F;
                 let v_bb = insns[pc + 1] >> 8;
                 let v_cc = insns[pc + 1] & 0xFF;
-
                 (format!("{} v{}, v{}, v{}", name, v_aa, v_bb, v_cc), 2)
             }
-            InstructionFormat::Format22b => (format!("{}", name,), 2),
-            InstructionFormat::Format22t => (format!("{}", name,), 2),
-            InstructionFormat::Format22s => (format!("{}", name,), 2),
-            InstructionFormat::Format22c => (format!("{}", name,), 2),
-            InstructionFormat::Format22cs => (format!("{}", name,), 2),
-            InstructionFormat::Format30t => (format!("{}", name,), 3),
-            InstructionFormat::Format32x => (format!("{}", name,), 3),
-            InstructionFormat::Format31i => (format!("{}", name,), 3),
-            InstructionFormat::Format31t => (format!("{}", name,), 3),
-            InstructionFormat::Format31c => (format!("{}", name,), 3),
-            InstructionFormat::Format35c => (format!("{}", name,), 3),
-            InstructionFormat::Format35ms => (format!("{}", name,), 3),
-            InstructionFormat::Format35mi => (format!("{}", name,), 3),
-            InstructionFormat::Format3rc => (format!("{}", name,), 3),
-            InstructionFormat::Format3rms => (format!("{}", name,), 3),
-            InstructionFormat::Format3rmi => (format!("{}", name,), 3),
+            InstructionFormat::Format22b => {
+                // op vAA, vBB, #+CC
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_bb = insns[pc + 1] >> 8;
+                let v_cc = insns[pc + 1] & 0xFF;
+                (format!("{} v{}, v{}, #+{}", name, v_a, v_bb, v_cc), 2)
+            }
+            InstructionFormat::Format22t => {
+                // op vA, vB, #+CCCC
+                // B|A|op CCCC
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_b = (instruction_unit >> 12) & 0x0F;
+                let offset = insns[pc + 1];
+                let target_address = address + (offset as usize);
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
+                } else {
+                    "invalid".to_string()
+                };
+                (
+                    format!("{} v{}, v{}, {}", name, v_a, v_b, target_address_str),
+                    2,
+                )
+            }
+            InstructionFormat::Format22s => {
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_b = (instruction_unit >> 12) & 0x0F;
+                let imm_cccc = insns[pc + 1];
+                (format!("{} v{}, v{}, #+{}", name, v_a, v_b, imm_cccc), 2)
+            }
+            InstructionFormat::Format22c => {
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_b = (instruction_unit >> 12) & 0x0F;
+                let cccc = insns[pc + 1];
+                (
+                    format!("{} v{}, v{}, <type,field>@{}", name, v_a, v_b, cccc),
+                    2,
+                )
+            }
+            InstructionFormat::Format22cs => {
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_b = (instruction_unit >> 12) & 0x0F;
+                let cccc = insns[pc + 1];
+                (format!("{} v{}, v{}, fieldoff_{}", name, v_a, v_b, cccc), 2)
+            }
+            InstructionFormat::Format30t => {
+                // `ØØ|op AAAA_{lo} AAAA_{hi}`
+                let literal_lo = insns[pc + 1];
+                let literal_hi = insns[pc + 2];
+                let literal = ((literal_hi as u32) << 16) | (literal_lo as u32);
+                (format!("{} +{}", name, literal), 3)
+            }
+            InstructionFormat::Format32x => {
+                let v_aaaa = insns[pc + 1];
+                let v_bbbb = insns[pc + 2];
+                (format!("{} v{}, v{}", name, v_aaaa, v_bbbb), 3)
+            }
+            InstructionFormat::Format31i => {
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let bb_low = insns[pc + 1];
+                let bb_high = insns[pc + 2];
+                let bb = ((bb_high as u32) << 16) | (bb_low as u32);
+                (format!("{} v{}, #+{}", name, v_aa, bb), 3)
+            }
+            InstructionFormat::Format31t => {
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let bb_low = insns[pc + 1];
+                let bb_high = insns[pc + 2];
+                let bb = ((bb_high as u32) << 16) | (bb_low as u32);
+                let target_address = address + (bb as usize);
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
+                } else {
+                    "invalid".to_string()
+                };
+
+                (format!("{} v{}, +{}", name, v_aa, target_address_str), 3)
+            }
+            InstructionFormat::Format31c => {
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let bbbb_low = insns[pc + 1];
+                let bbbb_high = insns[pc + 2];
+                let bbbb = ((bbbb_high as u32) << 16) | (bbbb_low as u32);
+                let string_val = string_ids.get(bbbb as usize).cloned().unwrap_or(0xFFFFFFFF);
+                let string_repr = string_map
+                    .get(&string_val)
+                    .cloned()
+                    .unwrap_or_else(|| "<invalid_string>".to_string());
+
+                (
+                    format!("{} v{}, \"{}\"string@{}", name, v_aa, string_repr, bbbb),
+                    3,
+                )
+            }
+            InstructionFormat::Format35c => {
+                // A|G|op BBBB F|E|D|C
+                // [A=5] op {vC, vD, vE, vF, vG}, meth@BBBB
+                // [A=5] op {vC, vD, vE, vF, vG}, site@BBBB
+                // [A=5] op {vC, vD, vE, vF, vG}, type@BBBB
+                // [A=4] op {vC, vD, vE, vF}, kind@BBBB
+                // [A=3] op {vC, vD, vE}, kind@BBBB
+                // [A=2] op {vC, vD}, kind@BBBB
+                // [A=1] op {vC}, kind@BBBB
+                // [A=0] op {}, kind@BBBB
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_g = (instruction_unit >> 12) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let v_c = (insns[pc + 2] >> 0) & 0x0F;
+                let v_d = (insns[pc + 2] >> 4) & 0x0F;
+                let v_e = (insns[pc + 2] >> 8) & 0x0F;
+                let v_f = (insns[pc + 2] >> 12) & 0x0F;
+
+                match v_a {
+                    5 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}, v{}}}, <meth,site,type>@{}",
+                            name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        ),
+                        3,
+                    ),
+                    4 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}}}, kind_{}",
+                            name, v_c, v_d, v_e, v_f, bbbb
+                        ),
+                        3,
+                    ),
+                    3 => (
+                        format!("{} {{v{}, v{}, v{}}}, kind_{}", name, v_c, v_d, v_e, bbbb),
+                        3,
+                    ),
+                    2 => (format!("{} {{v{}, v{}}}, kind_{}", name, v_c, v_d, bbbb), 3),
+                    1 => (format!("{} {{v{}}}, kind_{}", name, v_c, bbbb), 3),
+                    0 => (format!("{} {{}}, kind_{}", name, bbbb), 3),
+                    _ => (
+                        format!("{} (Error: invalid register count {})", name, v_a),
+                        3,
+                    ),
+                }
+            }
+            InstructionFormat::Format35ms => {
+                // [A=5] op {vC, vD, vE, vF, vG}, vtaboff@BBBB
+                // [A=4] op {vC, vD, vE, vF}, vtaboff@BBBB
+                // [A=3] op {vC, vD, vE}, vtaboff@BBBB
+                // [A=2] op {vC, vD}, vtaboff@BBBB
+                // [A=1] op {vC}, vtaboff@BBBB
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_g = (instruction_unit >> 12) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let v_c = (insns[pc + 2] >> 0) & 0x0F;
+                let v_d = (insns[pc + 2] >> 4) & 0x0F;
+                let v_e = (insns[pc + 2] >> 8) & 0x0F;
+                let v_f = (insns[pc + 2] >> 12) & 0x0F;
+
+                match v_a {
+                    5 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}, v{}}}, vtaboff_{}",
+                            name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        ),
+                        3,
+                    ),
+                    4 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}}}, vtaboff_{}",
+                            name, v_c, v_d, v_e, v_f, bbbb
+                        ),
+                        3,
+                    ),
+                    3 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}}}, vtaboff_{}",
+                            name, v_c, v_d, v_e, bbbb
+                        ),
+                        3,
+                    ),
+                    2 => (
+                        format!("{} {{v{}, v{}}}, vtaboff_{}", name, v_c, v_d, bbbb),
+                        3,
+                    ),
+                    1 => (format!("{} {{v{}}}, vtaboff_{}", name, v_c, bbbb), 3),
+                    _ => (
+                        format!("{} (Error: invalid register count {})", name, v_a),
+                        3,
+                    ),
+                }
+            }
+            InstructionFormat::Format35mi => {
+                // [A=5] op {vC, vD, vE, vF, vG}, inline@BBBB
+                // [A=4] op {vC, vD, vE, vF}, inline@BBBB
+                // [A=3] op {vC, vD, vE}, inline@BBBB
+                // [A=2] op {vC, vD}, inline@BBBB
+                // [A=1] op {vC}, inline@BBBB
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_g = (instruction_unit >> 12) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let v_c = (insns[pc + 2] >> 0) & 0x0F;
+                let v_d = (insns[pc + 2] >> 4) & 0x0F;
+                let v_e = (insns[pc + 2] >> 8) & 0x0F;
+                let v_f = (insns[pc + 2] >> 12) & 0x0F;
+
+                match v_a {
+                    5 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}, v{}}}, inline_{}",
+                            name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        ),
+                        3,
+                    ),
+                    4 => (
+                        format!(
+                            "{} {{v{}, v{}, v{}, v{}}}, inline_{}",
+                            name, v_c, v_d, v_e, v_f, bbbb
+                        ),
+                        3,
+                    ),
+                    3 => (
+                        format!("{} {{v{}, v{}, v{}}}, inline_{}", name, v_c, v_d, v_e, bbbb),
+                        3,
+                    ),
+                    2 => (
+                        format!("{} {{v{}, v{}}}, inline_{}", name, v_c, v_d, bbbb),
+                        3,
+                    ),
+                    1 => (format!("{} {{v{}}}, inline_{}", name, v_c, bbbb), 3),
+                    _ => (
+                        format!("{} (Error: invalid register count {})", name, v_a),
+                        3,
+                    ),
+                }
+            }
+            // TODO(sfx): check for off by ones.
+            InstructionFormat::Format3rc => {
+                // AA|op BBBB CCCC....NNNN
+                // Here v_a determines the number of arguments passed
+                // for this instruction.
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let cccc = insns[pc + 2];
+                // each register is as usual identified by a
+                // full 16bit value, so we need to read v_a
+                // number of u16 values from insns[pc + 2] onwards
+                // the register ids start from cccc to cccc + v_a -1
+                let mut registers = Vec::with_capacity(v_a as usize);
+                for i in 1..v_a {
+                    let reg_id = insns[pc + 2 + (i as usize)];
+                    registers.push(format!("v{}", cccc + i));
+                }
+
+                let registers_str = registers.join(", ");
+                (
+                    format!("{} {{{}}}, <meth,site,type>@{}", name, registers_str, bbbb),
+                    3 + (v_a as usize - 1),
+                )
+            }
+            InstructionFormat::Format3rms => {
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let cccc = insns[pc + 2];
+                // each register is as usual identified by a
+                // full 16bit value, so we need to read v_a
+                // number of u16 values from insns[pc + 2] onwards
+                // the register ids start from cccc to cccc + v_a -1
+                let mut registers = Vec::with_capacity(v_a as usize);
+                for i in 1..v_a {
+                    let reg_id = insns[pc + 2 + (i as usize)];
+                    registers.push(format!("v{}", cccc + i));
+                }
+
+                let registers_str = registers.join(", ");
+                (
+                    format!("{} {{{}}}, vtaboff@{}", name, registers_str, bbbb),
+                    3 + (v_a as usize - 1),
+                )
+            }
+            InstructionFormat::Format3rmi => {
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let cccc = insns[pc + 2];
+                let mut registers = Vec::with_capacity(v_a as usize);
+                for i in 1..v_a {
+                    let reg_id = insns[pc + 2 + (i as usize)];
+                    registers.push(format!("v{}", cccc + i));
+                }
+
+                let registers_str = registers.join(", ");
+                (
+                    format!("{} {{{}}}, inline@{}", name, registers_str, bbbb),
+                    3 + (v_a as usize - 1),
+                )
+            }
             InstructionFormat::Format45cc => (format!("{}", name,), 4),
             InstructionFormat::Format4rcc => (format!("{}", name,), 4),
-            InstructionFormat::Format51l => (format!("{}", name,), 5),
+            InstructionFormat::Format51l => {
+                // AA|op BBBBlo BBBB BBBB BBBBhi 5 bytes
+                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let bbbb_lo1 = insns[pc + 1];
+                let bbbb_lo2 = insns[pc + 2];
+                let bbbb_hi1 = insns[pc + 3];
+                let bbbb_hi2 = insns[pc + 4];
+                let bbbb = ((bbbb_hi2 as u64) << 48)
+                    | ((bbbb_hi1 as u64) << 32)
+                    | ((bbbb_lo2 as u64) << 16)
+                    | (bbbb_lo1 as u64);
+                (format!("{} v{}, #+{}", name, v_aa, bbbb), 5)
+            }
         };
 
         if pc + size_units > insns.len() {

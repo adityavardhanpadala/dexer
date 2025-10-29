@@ -12,7 +12,7 @@ simple_logger = "*"
 adler32 = "*"
 bitflags = "2.6.0"
 
-clap = { version = "4.5.36", features = ["derive"] }
+clap = { version = "4.5.36", features = ["std","derive"], default-features = false }
 lazy_static = "1.5.0"
 
 
