@@ -114,730 +114,276 @@ pub enum InstructionFormat {
     Format51l,
 }
 
-// --- Opcode Constants (Subset) ---
+macro_rules! declare_opcodes {
+    (
+        $(
+            $value:literal => $name:ident, $str_name:literal, $format:ident;
+        )*
+    ) => {
+        #[allow(non_camel_case_types)] // This convention looks better for opcodes.
+        #[derive(Debug, Copy, Clone, Ord, PartialEq, PartialOrd, Eq)]
+        pub enum Opcode {
+            $(
+                $name = $value,
+            )*
+        }
+
+        impl Opcode {
+            pub fn from_byte(byte: u8) -> Option<Opcode> {
+                match byte {
+                    $(
+                        $value => Some(Opcode::$name),
+                    )*
+                    _ => None,
+                }
+            }
+
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $(
+                        Opcode::$name => $str_name,
+                    )*
+                }
+            }
+
+            pub fn format(&self) -> InstructionFormat {
+                match self {
+                    $(
+                        Opcode::$name => InstructionFormat::$format,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+// --- Opcode Constants ---
 // Refer to: https://source.android.com/docs/core/dalvik/dalvik-bytecode
-#[allow(non_camel_case_types)] // This convention looks better for opcodes.
-#[derive(Debug, Copy, Clone, Ord, PartialEq, PartialOrd, Eq)]
-enum Opcode {
-    NOP = 0x00,
-    MOVE = 0x01,                   // Format 12x (move vA, vB)
-    MOVE_FROM16 = 0x02,            // Format 22x (move/from16 vAA, vBBBB)
-    MOVE_16 = 0x03,                // Format 32x (move/16 vAAAA, vBBBB)
-    MOVE_WIDE = 0x04,              // Format 12x (move-wide vA, vB)
-    MOVE_WIDE_FROM16 = 0x05,       // Format 22x (move-wide/from16 vAA, vBBBB)
-    MOVE_WIDE_16 = 0x06,           // Format 32x (move-wide/16 vAAAA, vBBBB)
-    MOVE_OBJECT = 0x07,            // Format 12x (move-object vA, vB)
-    MOVE_OBJECT_FROM16 = 0x08,     // Format 22x (move-object/from16 vAA, vBBBB)
-    MOVE_OBJECT_16 = 0x09,         // Format 32x (move-object/16 vAAAA, vBBBB)
-    MOVE_RESULT = 0x0a,            // Format 11x (move-result vAA)
-    MOVE_RESULT_WIDE = 0x0b,       // Format 11x (move-result-wide vAA)
-    MOVE_RESULT_OBJECT = 0x0c,     // Format 11x (move-result-object vAA)
-    MOVE_EXCEPTION = 0x0d,         // Format 11x (move-exception vAA)
-    RETURN_VOID = 0x0e,            // Format 10x
-    RETURN = 0x0f,                 // Format 11x (return vAA)
-    RETURN_WIDE = 0x10,            // Format 11x (return-wide vAA)
-    RETURN_OBJECT = 0x11,          // Format 11x (return-object vAA)
-    CONST_4 = 0x12,                // Format 11n (const/4 vA, #+B)
-    CONST_16 = 0x13,               // Format 21s (const/16 vAA, #+BBBB)
-    CONST = 0x14,                  // Format 31i (const vAA, #+BBBBBBBB)
-    CONST_HIGH16 = 0x15,           // Format 21h (const/high16 vAA, #+BBBB0000)
-    CONST_WIDE_16 = 0x16,          // Format 21s (const-wide/16 vAA, #+BBBB)
-    CONST_WIDE_32 = 0x17,          // Format 31i (const-wide/32 vAA, #+BBBBBBBB)
-    CONST_WIDE = 0x18,             // Format 51l (const-wide vAA, #+BBBBBBBBBBBBBBBB)
-    CONST_WIDE_HIGH16 = 0x19,      // Format 21h (const-wide/high16 vAA, #+BBBB000000000000)
-    CONST_STRING = 0x1a,           // Format 21c (const-string vAA, string@BBBB)
-    CONST_STRING_JUMBO = 0x1b,     // Format 31c (const-string/jumbo vAA, string@BBBBBBBB)
-    CONST_CLASS = 0x1c,            // Format 21c (const-class vAA, type@BBBB)
-    MONITOR_ENTER = 0x1d,          // Format 11x (monitor-enter vAA)
-    MONITOR_EXIT = 0x1e,           // Format 11x (monitor-exit vAA)
-    CHECK_CAST = 0x1f,             // Format 21c (check-cast vAA, type@BBBB)
-    INSTANCE_OF = 0x20,            // Format 22c (instance-of vA, vB, type@CCCC)
-    ARRAY_LENGTH = 0x21,           // Format 12x (array-length vA, vB)
-    NEW_INSTANCE = 0x22,           // Format 21c (new-instance vAA, type@BBBB)
-    NEW_ARRAY = 0x23,              // Format 22c (new-array vA, vB, type@CCCC)
-    FILLED_NEW_ARRAY = 0x24,       // Format 35c (filled-new-array {vC..vG}, type@BBBB)
-    FILLED_NEW_ARRAY_RANGE = 0x25, // Format 3rc (filled-new-array/range {vCCCC..vNNNN}, type@BBBB)
-    FILL_ARRAY_DATA = 0x26,        // Format 31t (fill-array-data vAA, +BBBBBBBB)
-    THROW = 0x27,                  // Format 11x (throw vAA)
-    GOTO = 0x28,                   // Format 10t (goto +AA)
-    GOTO_16 = 0x29,                // Format 20t (goto/16 +AAAA)
-    GOTO_32 = 0x2a,                // Format 30t (goto/32 +AAAAAAAA)
-    PACKED_SWITCH = 0x2b,          // Format 31t (packed-switch vAA, +BBBBBBBB)
-    SPARSE_SWITCH = 0x2c,          // Format 31t (sparse-switch vAA, +BBBBBBBB)
-
-    // cmpkind
-    CMPL_FLOAT = 0x2d,  // Format 23x (cmpl-float vAA, vBB, vCC)
-    CMPG_FLOAT = 0x2e,  // Format 23x (cmpg-float vAA, vBB, vCC)
-    CMPL_DOUBLE = 0x2f, // Format 23x (cmp-double vAA, vBB, vCC)
-    CMPG_DOUBLE = 0x30, // Format 23x (cmpg-double vAA, vBB, vCC)
-    CMP_LONG = 0x31,    // Format 23x (cmp-long vAA, vBB, vCC)
-
-    // if-test
-    IF_EQ = 0x32, // Format 22t (if-eq vA, vB, +CCCC)
-    IF_NE = 0x33, // Format 22t (if-ne vA, vB, +CCCC)
-    IF_LT = 0x34, // Format 22t (if-lt vA, vB, +CCCC)
-    IF_GE = 0x35, // Format 22t (if-ge vA, vB, +CCCC)
-    IF_GT = 0x36, // Format 22t (if-gt vA, vB, +CCCC)
-    IF_LE = 0x37, // Format 22t (if-le vA, vB, +CCCC)
-
-    // if-testz
-    IF_EQZ = 0x38, // Format 21t (if-eqz vA, +BBBB)
-    IF_NEZ = 0x39, // Format 21t (if-nez vA, +BBBB)
-    IF_LTZ = 0x3a, // Format 21t (if-ltz vA, +BBBB)
-    IF_GEZ = 0x3b, // Format 21t (if-gez vA, +BBBB)
-    IF_GTZ = 0x3c, // Format 21t (if-gtz vA, +BBBB)
-    IF_LEZ = 0x3d, // Format 21t (if-lex vA, +BBBB)
-
-    // Format 23x arrayop vAA, vBB, vCC
-    AGET = 0x44,
-    AGET_WIDE = 0x45,
-    AGET_OBJECT = 0x46,
-    AGET_BOOLEAN = 0x47,
-    AGET_BYTE = 0x48,
-    AGET_CHAR = 0x49,
-    AGET_SHORT = 0x4a,
-    APUT = 0x4b,
-    APUT_WIDE = 0x4c,
-    APUT_OBJECT = 0x4d,
-    APUT_BOOLEAN = 0x4e,
-    APUT_BYTE = 0x4f,
-    APUT_CHAR = 0x50,
-    APUT_SHORT = 0x51,
-
-    // instanceop vA, vB, field@CCCC
-    IGET = 0x52,         // Format 22c (iget vA, vB, field@CCCC)
-    IGET_WIDE = 0x53,    // Format 22c (iget-wide vA, vB, field@CCCC)
-    IGET_OBJECT = 0x54,  // Format 22c (iget-object vA, vB, field@CCCC)
-    IGET_BOOLEAN = 0x55, // Format 22c (iget-boolean vA, vB, field@CCCC)
-    IGET_BYTE = 0x56,    // Format 22c (iget-byte vA, vB, field@CCCC)
-    IGET_CHAR = 0x57,    // Format 22c (iget-char vA, vB, field@CCCC)
-    IGET_SHORT = 0x58,   // Format 22c (iget-short vA, vB, field@CCCC)
-    IPUT = 0x59,         // Format 22c (iput vA, vB, field@CCCC)
-    IPUT_WIDE = 0x5A,    // Format 22c (iput-wide vA, vB, field@CCCC)
-    IPUT_OBJECT = 0x5B,  // Format 22c (iput-object vA, vB, field@CCCC)
-    IPUT_BOOLEAN = 0x5C, // Format 22c (iput-boolean vA, vB, field@CCCC)
-    IPUT_BYTE = 0x5D,    // Format 22c (iput-byte vA, vB, field@CCCC)
-    IPUT_CHAR = 0x5E,    // Format 22c (iput-char vA, vB, field@CCCC)
-    IPUT_SHORT = 0x5F,   // Format 22c (iput-short vA, vB, field@CCCC)
-
-    // sttaticop vAA, field@BBBB
-    SGET = 0x60,         // Format 21c (sget vAA, field@BBBB)
-    SGET_WIDE = 0x61,    // Format 21c (sget-wide vAA, field@BBBB)
-    SGET_OBJECT = 0x62,  // Format 21c (sget-object vAA, field@BBBB)
-    SGET_BOOLEAN = 0x63, // Format 21c (sget-boolean vAA, field@BBBB)
-    SGET_BYTE = 0x64,    // Format 21c (sget-byte vAA, field@BBBB)
-    SGET_CHAR = 0x65,    // Format 21c (sget-char vAA, field@BBBB)
-    SGET_SHORT = 0x66,   // Format 21c (sget-short vAA, field@BBBB)
-    SPUT = 0x67,         // Format 21c (sput vAA, field@BBBB)
-    SPUT_WIDE = 0x68,    // Format 21c (sput-wide vAA, field@BBBB)
-    SPUT_OBJECT = 0x69,  // Format 21c (sput-object vAA, field@BBBB)
-    SPUT_BOOLEAN = 0x6A, // Format 21c (sput-boolean vAA, field@BBBB)
-    SPUT_BYTE = 0x6B,    // Format 21c (sput-byte vAA, field@BBBB)
-    SPUT_CHAR = 0x6C,    // Format 21c (sput-char vAA, field@BBBB)
-    SPUT_SHORT = 0x6D,   // Format 21c (sput-short vAA, field@BBBB)
-
-    // invokekind {vC..vG}, meth@BBBB
-    INVOKE_VIRTUAL = 0x6E,   // Format 35c (invoke-virtual {vC..vG}, meth@BBBB)
-    INVOKE_SUPER = 0x6F,     // Format 35c (invoke-super {vC..vG}, meth@BBBB)
-    INVOKE_DIRECT = 0x70,    // Format 35c (invoke-direct {vC..vG}, meth@BBBB)
-    INVOKE_STATIC = 0x71,    // Format 35c (invoke-static {vC..vG}, meth@BBBB)
-    INVOKE_INTERFACE = 0x72, // Format 35c (invoke-interface {vC..vG}, meth@BBBB)
-
-    // invoke-kind/range {vCCCC..vNNNN}, meth@BBBB
-    INVOKE_VIRTUAL_RANGE = 0x74, // Format 3rc (invoke-virtual/range {vCCCC..vNNNN}, meth@BBBB)
-    INVOKE_SUPER_RANGE = 0x75,   // Format 3rc (invoke-super/range {vCCCC..vNNNN}, meth@BBBB)
-    INVOKE_DIRECT_RANGE = 0x76,  // Format 3rc (invoke-direct/range {vCCCC..vNNNN}, meth@BBBB)
-    INVOKE_STATIC_RANGE = 0x77,  // Format 3rc (invoke-static/range {vCCCC..vNNNN}, meth@BBBB)
-    INVOKE_INTERFACE_RANGE = 0x78, // Format 3rc (invoke-interface/range {vCCCC..vNNNN}, meth@BBBB)
-
-    /// Unary operation: neg-int
-    NEG_INT = 0x7b, // Format 12x (neg-int vA, vB)
-    NOT_INT = 0x7c,         // Format 12x (not-int vA, vB)
-    NEG_LONG = 0x7d,        // Format 12x (neg-long vA, vB)
-    NOT_LONG = 0x7e,        // Format 12x (not-long vA, vB)
-    NEG_FLOAT = 0x7f,       // Format 12x (neg-float vA, vB)
-    NEG_DOUBLE = 0x80,      // Format 12x (neg-double vA, vB)
-    INT_TO_LONG = 0x81,     // Format 12x (int-to-long vA, vB)
-    INT_TO_FLOAT = 0x82,    // Format 12x (int-to-float vA, vB)
-    INT_TO_DOUBLE = 0x83,   // Format 12x (int-to-double vA, vB)
-    LONG_TO_INT = 0x84,     // Format 12x (long-to-int vA, vB)
-    LONG_TO_FLOAT = 0x85,   // Format 12x (long-to-float vA, vB)
-    LONG_TO_DOUBLE = 0x86,  // Format 12x (long-to-double vA, vB)
-    FLOAT_TO_INT = 0x87,    // Format 12x (float-to-int vA, vB)
-    FLOAT_TO_LONG = 0x88,   // Format 12x (float-to-long vA, vB)
-    FLOAT_TO_DOUBLE = 0x89, // Format 12x (float-to-double vA, vB)
-    DOUBLE_TO_INT = 0x8a,   // Format 12x (double-to-int vA, vB)
-    DOUBLE_TO_LONG = 0x8b,  // Format 12x (double-to-long vA, vB)
-    DOUBLE_TO_FLOAT = 0x8c, // Format 12x (double-to-float vA, vB)
-    INT_TO_BYTE = 0x8d,     // Format 12x (int-to-byte vA, vB)
-    INT_TO_CHAR = 0x8e,     // Format 12x (int-to-char vA, vB)
-    INT_TO_SHORT = 0x8f,    // Format 12x (int-to-short vA, vB)
-
-    // binop vAA, vBB, vCC
-    ADD_INT = 0x90,    // Format 23x (add-int vAA, vBB, vCC)
-    SUB_INT = 0x91,    // Format 23x (sub-int vAA, vBB, vCC)
-    MUL_INT = 0x92,    // Format 23x (mul-int vAA, vBB, vCC)
-    DIV_INT = 0x93,    // Format 23x (div-int vAA, vBB, vCC)
-    REM_INT = 0x94,    // Format 23x (rem-int vAA, vBB, vCC)
-    AND_INT = 0x95,    // Format 23x (and-int vAA, vBB, vCC)
-    OR_INT = 0x96,     // Format 23x (or-int vAA, vBB, vCC)
-    XOR_INT = 0x97,    // Format 23x (xor-int vAA, vBB, vCC)
-    SHL_INT = 0x98,    // Format 23x (shl-int vAA, vBB, vCC)
-    SHR_INT = 0x99,    // Format 23x (shr-int vAA, vBB, vCC)
-    USHR_INT = 0x9A,   // Format 23x (ushr-int vAA, vBB, vCC)
-    ADD_LONG = 0x9B,   // Format 23x (add-long vAA, vBB, vCC)
-    SUB_LONG = 0x9C,   // Format 23x (sub-long vAA, vBB, vCC)
-    MUL_LONG = 0x9D,   // Format 23x (mul-long vAA, vBB, vCC)
-    DIV_LONG = 0x9E,   // Format 23x (div-long vAA, vBB, vCC)
-    REM_LONG = 0x9F,   // Format 23x (rem-long vAA, vBB, vCC)
-    AND_LONG = 0xA0,   // Format 23x (and-long vAA, vBB, vCC)
-    OR_LONG = 0xA1,    // Format 23x (or-long vAA, vBB, vCC)
-    XOR_LONG = 0xA2,   // Format 23x (xor-long vAA, vBB, vCC)
-    SHL_LONG = 0xA3,   // Format 23x (shl-long vAA, vBB, vCC)
-    SHR_LONG = 0xA4,   // Format 23x (shr-long vAA, vBB, vCC)
-    USHR_LONG = 0xA5,  // Format 23x (ushr-long vAA, vBB, vCC)
-    ADD_FLOAT = 0xA6,  // Format 23x (add-float vAA, vBB, vCC)
-    SUB_FLOAT = 0xA7,  // Format 23x (sub-float vAA, vBB, vCC)
-    MUL_FLOAT = 0xA8,  // Format 23x (mul-float vAA, vBB, vCC)
-    DIV_FLOAT = 0xA9,  // Format 23x (div-float vAA, vBB, vCC)
-    REM_FLOAT = 0xAA,  // Format 23x (rem-float vAA, vBB, vCC)
-    ADD_DOUBLE = 0xAB, // Format 23x (add-double vAA, vBB, vCC)
-    SUB_DOUBLE = 0xAC, // Format 23x (sub-double vAA, vBB, vCC)
-    MUL_DOUBLE = 0xAD, // Format 23x (mul-double vAA, vBB, vCC)
-    DIV_DOUBLE = 0xAE, // Format 23x (div-double vAA, vBB, vCC)
-    REM_DOUBLE = 0xAF, // Format 23x (rem-double vAA, vBB, vCC)
-
-    // binop/2addr vAA, vBB, vCC
-    ADD_INT_2ADDR = 0xb0,    // Format 12x (add-int/2addr vA, vB)
-    SUB_INT_2ADDR = 0xb1,    // Format 12x (sub-int/2addr vA, vB)
-    MUL_INT_2ADDR = 0xb2,    // Format 12x (mul-int/2addr vA, vB)
-    DIV_INT_2ADDR = 0xb3,    // Format 12x (div-int/2addr vA, vB)
-    REM_INT_2ADDR = 0xb4,    // Format 12x (rem-int/2addr vA, vB)
-    AND_INT_2ADDR = 0xb5,    // Format 12x (and-int/2addr vA, vB)
-    OR_INT_2ADDR = 0xb6,     // Format 12x (or-int/2addr vA, vB)
-    XOR_INT_2ADDR = 0xb7,    // Format 12x (xor-int/2addr vA, vB)
-    SHL_INT_2ADDR = 0xb8,    // Format 12x (shl-int/2addr vA, vB)
-    SHR_INT_2ADDR = 0xb9,    // Format 12x (shr-int/2addr vA, vB)
-    USHR_INT_2ADDR = 0xba,   // Format 12x (ushr-int/2addr vA, vB)
-    ADD_LONG_2ADDR = 0xbb,   // Format 12x (add-long/2addr vA, vB)
-    SUB_LONG_2ADDR = 0xbc,   // Format 12x (sub-long/2addr vA, vB)
-    MUL_LONG_2ADDR = 0xbd,   // Format 12x (mul-long/2addr vA, vB)
-    DIV_LONG_2ADDR = 0xbe,   // Format 12x (div-long/2addr vA, vB)
-    REM_LONG_2ADDR = 0xbf,   // Format 12x (rem-long/2addr vA, vB)
-    AND_LONG_2ADDR = 0xc0,   // Format 12x (and-long/2addr vA, vB)
-    OR_LONG_2ADDR = 0xc1,    // Format 12x (or-long/2addr vA, vB)
-    XOR_LONG_2ADDR = 0xc2,   // Format 12x (xor-long/2addr vA, vB)
-    SHL_LONG_2ADDR = 0xc3,   // Format 12x (shl-long/2addr vA, vB)
-    SHR_LONG_2ADDR = 0xc4,   // Format 12x (shr-long/2addr vA, vB)
-    USHR_LONG_2ADDR = 0xc5,  // Format 12x (ushr-long/2addr vA, vB)
-    ADD_FLOAT_2ADDR = 0xc6,  // Format 12x (add-float/2addr vA, vB)
-    SUB_FLOAT_2ADDR = 0xc7,  // Format 12x (sub-float/2addr vA, vB)
-    MUL_FLOAT_2ADDR = 0xc8,  // Format 12x (mul-float/2addr vA, vB)
-    DIV_FLOAT_2ADDR = 0xc9,  // Format 12x (div-float/2addr vA, vB)
-    REM_FLOAT_2ADDR = 0xca,  // Format 12x (rem-float/2addr vA, vB)
-    ADD_DOUBLE_2ADDR = 0xcb, // Format 12x (add-double/2addr vA, vB)
-    SUB_DOUBLE_2ADDR = 0xcc, // Format 12x (sub-double/2addr vA, vB)
-    MUL_DOUBLE_2ADDR = 0xcd, // Format 12x (mul-double/2addr vA, vB)
-    DIV_DOUBLE_2ADDR = 0xce, // Format 12x (div-double/2addr vA, vB)
-    REM_DOUBLE_2ADDR = 0xcf, // Format 12x (rem-double/2addr vA, vB)
-
-    // binop/lit16 vAA, vBB, #+CCCC
-    ADD_INT_LIT16 = 0xd0, // Format 22s (add-int/lit16 vA, vB, #+CCCC)
-    RSUB_INT = 0xd1,      // Format 22s (rsub-int vA, vB, #+CCCC)
-    MUL_INT_LIT16 = 0xd2, // Format 22s (mul-int/lit16 vA, vB, #+CCCC)
-    DIV_INT_LIT16 = 0xd3, // Format 22s (div-int/lit16 vA, vB, #+CCCC)
-    REM_INT_LIT16 = 0xd4, // Format 22s (rem-int/lit16 vA, vB, #+CCCC)
-    AND_INT_LIT16 = 0xd5, // Format 22s (and-int/lit16 vA, vB, #+CCCC)
-    OR_INT_LIT16 = 0xd6,  // Format 22s (or-int/lit16 vA, vB, #+CCCC)
-    XOR_INT_LIT16 = 0xd7, // Format 22s (xor-int/lit16 vA, vB, #+CCCC)
-
-    // binop/lit8 vAA, vBB, #+CC
-    ADD_INT_LIT8 = 0xd8,  // Format 22b (add-int/lit8 vAA, vBB, #+CC)
-    RSUB_INT_LIT8 = 0xd9, // Format 22b (rsub-int/lit8 vAA, vBB, #+CC)
-    MUL_INT_LIT8 = 0xda,  // Format 22b (mul-int/lit8 vAA, vBB, #+CC)
-    DIV_INT_LIT8 = 0xdb,  // Format 22b (div-int/lit8 vAA, vBB, #+CC)
-    REM_INT_LIT8 = 0xdc,  // Format 22b (rem-int/lit8 vAA, vBB, #+CC)
-    AND_INT_LIT8 = 0xdd,  // Format 22b (and-int/lit8 vAA, vBB, #+CC)
-    OR_INT_LIT8 = 0xde,   // Format 22b (or-int/lit8 vAA, vBB, #+CC)
-    XOR_INT_LIT8 = 0xdf,  // Format 22b (xor-int/lit8 vAA, vBB, #+CC)
-    SHL_INT_LIT8 = 0xe0,  // Format 22b (shl-int/lit8 vAA, vBB, #+CC)
-    SHR_INT_LIT8 = 0xe1,  // Format 22b (shr-int/lit8 vAA, vBB, #+CC)
-    USHR_INT_LIT8 = 0xe2, // Format 22b (ushr-int/lit8 vAA, vBB, #+CC)
-
-    INVOKE_POLYMORPHIC = 0xfa, // Format 45cc (invoke-polymorphic {vC,.. vG}, meth@BBBB, proto@HHHH)
-    INVOKE_POLYMORPHIC_RANGE = 0xfb, // Format 4rcc (invoke-polymorphic/range {vCCCC..vNNNN}, meth@BBBB, proto@HHHH)
-    INVOKE_CUSTOM = 0xfc,            // Format 45c (invoke-custom {vC,.. vG}, callsite@BBBB)
-    INVOKE_CUSTOM_RANGE = 0xfd, // Format 4rc (invoke-custom/range {vCCCC..vNNNN}, callsite@BBBB)
-
-    CONST_METHOD_HANDLE = 0xfe, // Format 21c (const-method-handle vAA, method_handle@BBBB)
-    CONST_METHOD_TYPE = 0xff,   // Format 21c (const-method-type vAA, method_type@BBBB)
-}
-
-impl Opcode {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Opcode::NOP => "nop",
-            Opcode::MOVE => "move",
-            Opcode::MOVE_FROM16 => "move/from16",
-            Opcode::MOVE_16 => "move/16",
-            Opcode::MOVE_WIDE => "move-wide",
-            Opcode::MOVE_WIDE_FROM16 => "move-wide/from16",
-            Opcode::MOVE_WIDE_16 => "move-wide/16",
-            Opcode::MOVE_OBJECT => "move-object",
-            Opcode::MOVE_OBJECT_FROM16 => "move-object/from16",
-            Opcode::MOVE_OBJECT_16 => "move-object/16",
-            Opcode::MOVE_RESULT => "move-result",
-            Opcode::MOVE_RESULT_WIDE => "move-result-wide",
-            Opcode::MOVE_RESULT_OBJECT => "move-result-object",
-            Opcode::MOVE_EXCEPTION => "move-exception",
-            Opcode::RETURN_VOID => "return-void",
-            Opcode::RETURN => "return",
-            Opcode::RETURN_WIDE => "return-wide",
-            Opcode::RETURN_OBJECT => "return-object",
-            Opcode::CONST_4 => "const/4",
-            Opcode::CONST_16 => "const/16",
-            Opcode::CONST => "const",
-            Opcode::CONST_HIGH16 => "const/high16",
-            Opcode::CONST_WIDE_16 => "const-wide/16",
-            Opcode::CONST_WIDE_32 => "const-wide/32",
-            Opcode::CONST_WIDE => "const-wide",
-            Opcode::CONST_WIDE_HIGH16 => "const-wide/high16",
-            Opcode::CONST_STRING => "const-string",
-            Opcode::CONST_STRING_JUMBO => "const-string/jumbo",
-            Opcode::CONST_CLASS => "const-class",
-            Opcode::MONITOR_ENTER => "monitor-enter",
-            Opcode::MONITOR_EXIT => "monitor-exit",
-            Opcode::CHECK_CAST => "check-cast",
-            Opcode::INSTANCE_OF => "instance-of",
-            Opcode::ARRAY_LENGTH => "array-length",
-            Opcode::NEW_INSTANCE => "new-instance",
-            Opcode::NEW_ARRAY => "new-array",
-            Opcode::FILLED_NEW_ARRAY => "filled-new-array",
-            Opcode::FILLED_NEW_ARRAY_RANGE => "filled-new-array/range",
-            Opcode::FILL_ARRAY_DATA => "fill-array-data",
-            Opcode::THROW => "throw",
-            Opcode::GOTO => "goto",
-            Opcode::GOTO_16 => "goto/16",
-            Opcode::GOTO_32 => "goto/32",
-            Opcode::PACKED_SWITCH => "packed-switch",
-            Opcode::SPARSE_SWITCH => "sparse-switch",
-            Opcode::CMPL_FLOAT => "cmpl-float",
-            Opcode::CMPG_FLOAT => "cmpg-float",
-            Opcode::CMPL_DOUBLE => "cmpl-double",
-            Opcode::CMPG_DOUBLE => "cmpg-double",
-            Opcode::CMP_LONG => "cmp-long",
-            Opcode::IF_EQ => "if-eq",
-            Opcode::IF_NE => "if-ne",
-            Opcode::IF_LT => "if-lt",
-            Opcode::IF_GE => "if-ge",
-            Opcode::IF_GT => "if-gt",
-            Opcode::IF_LE => "if-le",
-            Opcode::IF_EQZ => "if-eqz",
-            Opcode::IF_NEZ => "if-nez",
-            Opcode::IF_LTZ => "if-ltz",
-            Opcode::IF_GEZ => "if-gez",
-            Opcode::IF_GTZ => "if-gtz",
-            Opcode::IF_LEZ => "if-lex",
-            Opcode::AGET => "aget",
-            Opcode::AGET_WIDE => "aget-wide",
-            Opcode::AGET_OBJECT => "aget-object",
-            Opcode::AGET_BOOLEAN => "aget-boolean",
-            Opcode::AGET_BYTE => "aget-byte",
-            Opcode::AGET_CHAR => "aget-char",
-            Opcode::AGET_SHORT => "aget-short",
-            Opcode::APUT => "aput",
-            Opcode::APUT_WIDE => "aput-wide",
-            Opcode::APUT_OBJECT => "aput-object",
-            Opcode::APUT_BOOLEAN => "aput-boolean",
-            Opcode::APUT_BYTE => "aput-byte",
-            Opcode::APUT_CHAR => "aput-char",
-            Opcode::APUT_SHORT => "aput-short",
-            Opcode::IGET => "iget",
-            Opcode::IGET_WIDE => "iget-wide",
-            Opcode::IGET_OBJECT => "iget-object",
-            Opcode::IGET_BOOLEAN => "iget-boolean",
-            Opcode::IGET_BYTE => "iget-byte",
-            Opcode::IGET_CHAR => "iget-char",
-            Opcode::IGET_SHORT => "iget-short",
-            Opcode::IPUT => "iput",
-            Opcode::IPUT_WIDE => "iput-wide",
-            Opcode::IPUT_OBJECT => "iput-object",
-            Opcode::IPUT_BOOLEAN => "iput-boolean",
-            Opcode::IPUT_BYTE => "iput-byte",
-            Opcode::IPUT_CHAR => "iput-char",
-            Opcode::IPUT_SHORT => "iput-short",
-            Opcode::SGET => "sget",
-            Opcode::SGET_WIDE => "sget-wide",
-            Opcode::SGET_OBJECT => "sget-object",
-            Opcode::SGET_BOOLEAN => "sget-boolean",
-            Opcode::SGET_BYTE => "sget-byte",
-            Opcode::SGET_CHAR => "sget-char",
-            Opcode::SGET_SHORT => "sget-short",
-            Opcode::SPUT => "sput",
-            Opcode::SPUT_WIDE => "sput-wide",
-            Opcode::SPUT_OBJECT => "sput-object",
-            Opcode::SPUT_BOOLEAN => "sput-boolean",
-            Opcode::SPUT_BYTE => "sput-byte",
-            Opcode::SPUT_CHAR => "sput-char",
-            Opcode::SPUT_SHORT => "sput-short",
-            Opcode::INVOKE_VIRTUAL => "invoke-virtual",
-            Opcode::INVOKE_SUPER => "invoke-super",
-            Opcode::INVOKE_DIRECT => "invoke-direct",
-            Opcode::INVOKE_STATIC => "invoke-static",
-            Opcode::INVOKE_INTERFACE => "invoke-interface",
-            Opcode::INVOKE_VIRTUAL_RANGE => "invoke-virtual/range",
-            Opcode::INVOKE_SUPER_RANGE => "invoke-super/range",
-            Opcode::INVOKE_DIRECT_RANGE => "invoke-direct/range",
-            Opcode::INVOKE_STATIC_RANGE => "invoke-static/range",
-            Opcode::INVOKE_INTERFACE_RANGE => "invoke-interface/range",
-            Opcode::NEG_INT => "neg-int",
-            Opcode::NOT_INT => "not-int",
-            Opcode::NEG_LONG => "neg-long",
-            Opcode::NOT_LONG => "not-long",
-            Opcode::NEG_FLOAT => "neg-float",
-            Opcode::NEG_DOUBLE => "neg-double",
-            Opcode::INT_TO_LONG => "int-to-long",
-            Opcode::INT_TO_FLOAT => "int-to-float",
-            Opcode::INT_TO_DOUBLE => "int-to-double",
-            Opcode::LONG_TO_INT => "long-to-int",
-            Opcode::LONG_TO_FLOAT => "long-to-float",
-            Opcode::LONG_TO_DOUBLE => "long-to-double",
-            Opcode::FLOAT_TO_INT => "float-to-int",
-            Opcode::FLOAT_TO_LONG => "float-to-long",
-            Opcode::FLOAT_TO_DOUBLE => "float-to-double",
-            Opcode::DOUBLE_TO_INT => "double-to-int",
-            Opcode::DOUBLE_TO_LONG => "double-to-long",
-            Opcode::DOUBLE_TO_FLOAT => "double-to-float",
-            Opcode::INT_TO_BYTE => "int-to-byte",
-            Opcode::INT_TO_CHAR => "int-to-char",
-            Opcode::INT_TO_SHORT => "int-to-short",
-            Opcode::ADD_INT => "add-int",
-            Opcode::SUB_INT => "sub-int",
-            Opcode::MUL_INT => "mul-int",
-            Opcode::DIV_INT => "div-int",
-            Opcode::REM_INT => "rem-int",
-            Opcode::AND_INT => "and-int",
-            Opcode::OR_INT => "or-int",
-            Opcode::XOR_INT => "xor-int",
-            Opcode::SHL_INT => "shl-int",
-            Opcode::SHR_INT => "shr-int",
-            Opcode::USHR_INT => "ushr-int",
-            Opcode::ADD_LONG => "add-long",
-            Opcode::SUB_LONG => "sub-long",
-            Opcode::MUL_LONG => "mul-long",
-            Opcode::DIV_LONG => "div-long",
-            Opcode::REM_LONG => "rem-long",
-            Opcode::AND_LONG => "and-long",
-            Opcode::OR_LONG => "or-long",
-            Opcode::XOR_LONG => "xor-long",
-            Opcode::SHL_LONG => "shl-long",
-            Opcode::SHR_LONG => "shr-long",
-            Opcode::USHR_LONG => "ushr-long",
-            Opcode::ADD_FLOAT => "add-float",
-            Opcode::SUB_FLOAT => "sub-float",
-            Opcode::MUL_FLOAT => "mul-float",
-            Opcode::DIV_FLOAT => "div-float",
-            Opcode::REM_FLOAT => "rem-float",
-            Opcode::ADD_DOUBLE => "add-double",
-            Opcode::SUB_DOUBLE => "sub-double",
-            Opcode::MUL_DOUBLE => "mul-double",
-            Opcode::DIV_DOUBLE => "div-double",
-            Opcode::REM_DOUBLE => "rem-double",
-            Opcode::ADD_INT_2ADDR => "add-int/2addr",
-            Opcode::SUB_INT_2ADDR => "sub-int/2addr",
-            Opcode::MUL_INT_2ADDR => "mul-int/2addr",
-            Opcode::DIV_INT_2ADDR => "div-int/2addr",
-            Opcode::REM_INT_2ADDR => "rem-int/2addr",
-            Opcode::AND_INT_2ADDR => "and-int/2addr",
-            Opcode::OR_INT_2ADDR => "or-int/2addr",
-            Opcode::XOR_INT_2ADDR => "xor-int/2addr",
-            Opcode::SHL_INT_2ADDR => "shl-int/2addr",
-            Opcode::SHR_INT_2ADDR => "shr-int/2addr",
-            Opcode::USHR_INT_2ADDR => "ushr-int/2addr",
-            Opcode::ADD_LONG_2ADDR => "add-long/2addr",
-            Opcode::SUB_LONG_2ADDR => "sub-long/2addr",
-            Opcode::MUL_LONG_2ADDR => "mul-long/2addr",
-            Opcode::DIV_LONG_2ADDR => "div-long/2addr",
-            Opcode::REM_LONG_2ADDR => "rem-long/2addr",
-            Opcode::AND_LONG_2ADDR => "and-long/2addr",
-            Opcode::OR_LONG_2ADDR => "or-long/2addr",
-            Opcode::XOR_LONG_2ADDR => "xor-long/2addr",
-            Opcode::SHL_LONG_2ADDR => "shl-long/2addr",
-            Opcode::SHR_LONG_2ADDR => "shr-long/2addr",
-            Opcode::USHR_LONG_2ADDR => "ushr-long/2addr",
-            Opcode::ADD_FLOAT_2ADDR => "add-float/2addr",
-            Opcode::SUB_FLOAT_2ADDR => "sub-float/2addr",
-            Opcode::MUL_FLOAT_2ADDR => "mul-float/2addr",
-            Opcode::DIV_FLOAT_2ADDR => "div-float/2addr",
-            Opcode::REM_FLOAT_2ADDR => "rem-float/2addr",
-            Opcode::ADD_DOUBLE_2ADDR => "add-double/2addr",
-            Opcode::SUB_DOUBLE_2ADDR => "sub-double/2addr",
-            Opcode::MUL_DOUBLE_2ADDR => "mul-double/2addr",
-            Opcode::DIV_DOUBLE_2ADDR => "div-double/2addr",
-            Opcode::REM_DOUBLE_2ADDR => "rem-double/2addr",
-            Opcode::ADD_INT_LIT16 => "add-int/lit16",
-            Opcode::RSUB_INT => "rsub-int",
-            Opcode::MUL_INT_LIT16 => "mul-int/lit16",
-            Opcode::DIV_INT_LIT16 => "div-int/lit16",
-            Opcode::REM_INT_LIT16 => "rem-int/lit16",
-            Opcode::AND_INT_LIT16 => "and-int/lit16",
-            Opcode::OR_INT_LIT16 => "or-int/lit16",
-            Opcode::XOR_INT_LIT16 => "xor-int/lit16",
-            Opcode::ADD_INT_LIT8 => "add-int/lit8",
-            Opcode::RSUB_INT_LIT8 => "rsub-int/lit8",
-            Opcode::MUL_INT_LIT8 => "mul-int/lit8",
-            Opcode::DIV_INT_LIT8 => "div-int/lit8",
-            Opcode::REM_INT_LIT8 => "rem-int/lit8",
-            Opcode::AND_INT_LIT8 => "and-int/lit8",
-            Opcode::OR_INT_LIT8 => "or-int/lit8",
-            Opcode::XOR_INT_LIT8 => "xor-int/lit8",
-            Opcode::SHL_INT_LIT8 => "shl-int/lit8",
-            Opcode::SHR_INT_LIT8 => "shr-int/lit8",
-            Opcode::USHR_INT_LIT8 => "ushr-int/lit8",
-            Opcode::INVOKE_POLYMORPHIC => "invoke-polymorphic",
-            Opcode::INVOKE_POLYMORPHIC_RANGE => "invoke-polymorphic/range",
-            Opcode::INVOKE_CUSTOM => "invoke-custom",
-            Opcode::INVOKE_CUSTOM_RANGE => "invoke-custom/range",
-            Opcode::CONST_METHOD_HANDLE => "const-method-handle",
-            Opcode::CONST_METHOD_TYPE => "const-method-type",
-            _ => "unknown", // Placeholder for brevity
-        }
-    }
-
-    pub fn format(&self) -> InstructionFormat {
-        match self {
-            Opcode::NOP => InstructionFormat::Format10x,
-            Opcode::MOVE => InstructionFormat::Format12x,
-            Opcode::MOVE_FROM16 => InstructionFormat::Format22x,
-            Opcode::MOVE_16 => InstructionFormat::Format32x,
-            Opcode::MOVE_WIDE => InstructionFormat::Format12x,
-            Opcode::MOVE_WIDE_FROM16 => InstructionFormat::Format22x,
-            Opcode::MOVE_WIDE_16 => InstructionFormat::Format32x,
-            Opcode::MOVE_OBJECT => InstructionFormat::Format12x,
-            Opcode::MOVE_OBJECT_FROM16 => InstructionFormat::Format22x,
-            Opcode::MOVE_OBJECT_16 => InstructionFormat::Format32x,
-            Opcode::MOVE_RESULT => InstructionFormat::Format11x,
-            Opcode::MOVE_RESULT_WIDE => InstructionFormat::Format11x,
-            Opcode::MOVE_RESULT_OBJECT => InstructionFormat::Format11x,
-            Opcode::MOVE_EXCEPTION => InstructionFormat::Format11x,
-            Opcode::RETURN_VOID => InstructionFormat::Format10x,
-            Opcode::RETURN => InstructionFormat::Format11x,
-            Opcode::RETURN_WIDE => InstructionFormat::Format11x,
-            Opcode::RETURN_OBJECT => InstructionFormat::Format11x,
-            Opcode::CONST_4 => InstructionFormat::Format11n,
-            Opcode::CONST_16 => InstructionFormat::Format21s,
-            Opcode::CONST => InstructionFormat::Format31i,
-            Opcode::CONST_HIGH16 => InstructionFormat::Format21h,
-            Opcode::CONST_WIDE_16 => InstructionFormat::Format21s,
-            Opcode::CONST_WIDE_32 => InstructionFormat::Format31i,
-            Opcode::CONST_WIDE => InstructionFormat::Format51l,
-            Opcode::CONST_WIDE_HIGH16 => InstructionFormat::Format21h,
-            Opcode::CONST_STRING => InstructionFormat::Format21c,
-            Opcode::CONST_STRING_JUMBO => InstructionFormat::Format31c,
-            Opcode::CONST_CLASS => InstructionFormat::Format21c,
-            Opcode::MONITOR_ENTER => InstructionFormat::Format11x,
-            Opcode::MONITOR_EXIT => InstructionFormat::Format11x,
-            Opcode::CHECK_CAST => InstructionFormat::Format21c,
-            Opcode::INSTANCE_OF => InstructionFormat::Format22c,
-            Opcode::ARRAY_LENGTH => InstructionFormat::Format12x,
-            Opcode::NEW_INSTANCE => InstructionFormat::Format21c,
-            Opcode::NEW_ARRAY => InstructionFormat::Format22c,
-            Opcode::FILLED_NEW_ARRAY => InstructionFormat::Format35c,
-            Opcode::FILLED_NEW_ARRAY_RANGE => InstructionFormat::Format3rc,
-            Opcode::FILL_ARRAY_DATA => InstructionFormat::Format31t,
-            Opcode::THROW => InstructionFormat::Format11x,
-            Opcode::GOTO => InstructionFormat::Format10t,
-            Opcode::GOTO_16 => InstructionFormat::Format20t,
-            Opcode::GOTO_32 => InstructionFormat::Format30t,
-            Opcode::PACKED_SWITCH => InstructionFormat::Format31t,
-            Opcode::SPARSE_SWITCH => InstructionFormat::Format31t,
-            Opcode::CMPL_FLOAT => InstructionFormat::Format23x,
-            Opcode::CMPG_FLOAT => InstructionFormat::Format23x,
-            Opcode::CMPL_DOUBLE => InstructionFormat::Format23x,
-            Opcode::CMPG_DOUBLE => InstructionFormat::Format23x,
-            Opcode::CMP_LONG => InstructionFormat::Format23x,
-            Opcode::IF_EQ => InstructionFormat::Format22t,
-            Opcode::IF_NE => InstructionFormat::Format22t,
-            Opcode::IF_LT => InstructionFormat::Format22t,
-            Opcode::IF_GE => InstructionFormat::Format22t,
-            Opcode::IF_GT => InstructionFormat::Format22t,
-            Opcode::IF_LE => InstructionFormat::Format22t,
-            Opcode::IF_EQZ => InstructionFormat::Format21t,
-            Opcode::IF_NEZ => InstructionFormat::Format21t,
-            Opcode::IF_LTZ => InstructionFormat::Format21t,
-            Opcode::IF_GEZ => InstructionFormat::Format21t,
-            Opcode::IF_GTZ => InstructionFormat::Format21t,
-            Opcode::IF_LEZ => InstructionFormat::Format21t,
-            Opcode::AGET => InstructionFormat::Format23x,
-            Opcode::AGET_WIDE => InstructionFormat::Format23x,
-            Opcode::AGET_OBJECT => InstructionFormat::Format23x,
-            Opcode::AGET_BOOLEAN => InstructionFormat::Format23x,
-            Opcode::AGET_BYTE => InstructionFormat::Format23x,
-            Opcode::AGET_CHAR => InstructionFormat::Format23x,
-            Opcode::AGET_SHORT => InstructionFormat::Format23x,
-            Opcode::APUT => InstructionFormat::Format23x,
-            Opcode::APUT_WIDE => InstructionFormat::Format23x,
-            Opcode::APUT_OBJECT => InstructionFormat::Format23x,
-            Opcode::APUT_BOOLEAN => InstructionFormat::Format23x,
-            Opcode::APUT_BYTE => InstructionFormat::Format23x,
-            Opcode::APUT_CHAR => InstructionFormat::Format23x,
-            Opcode::APUT_SHORT => InstructionFormat::Format23x,
-            Opcode::IGET => InstructionFormat::Format22c,
-            Opcode::IGET_WIDE => InstructionFormat::Format22c,
-            Opcode::IGET_OBJECT => InstructionFormat::Format22c,
-            Opcode::IGET_BOOLEAN => InstructionFormat::Format22c,
-            Opcode::IGET_BYTE => InstructionFormat::Format22c,
-            Opcode::IGET_CHAR => InstructionFormat::Format22c,
-            Opcode::IGET_SHORT => InstructionFormat::Format22c,
-            Opcode::IPUT => InstructionFormat::Format22c,
-            Opcode::IPUT_WIDE => InstructionFormat::Format22c,
-            Opcode::IPUT_OBJECT => InstructionFormat::Format22c,
-            Opcode::IPUT_BOOLEAN => InstructionFormat::Format22c,
-            Opcode::IPUT_BYTE => InstructionFormat::Format22c,
-            Opcode::IPUT_CHAR => InstructionFormat::Format22c,
-            Opcode::IPUT_SHORT => InstructionFormat::Format22c,
-            Opcode::SGET => InstructionFormat::Format21c,
-            Opcode::SGET_WIDE => InstructionFormat::Format21c,
-            Opcode::SGET_OBJECT => InstructionFormat::Format21c,
-            Opcode::SGET_BOOLEAN => InstructionFormat::Format21c,
-            Opcode::SGET_BYTE => InstructionFormat::Format21c,
-            Opcode::SGET_CHAR => InstructionFormat::Format21c,
-            Opcode::SGET_SHORT => InstructionFormat::Format21c,
-            Opcode::SPUT => InstructionFormat::Format21c,
-            Opcode::SPUT_WIDE => InstructionFormat::Format21c,
-            Opcode::SPUT_OBJECT => InstructionFormat::Format21c,
-            Opcode::SPUT_BOOLEAN => InstructionFormat::Format21c,
-            Opcode::SPUT_BYTE => InstructionFormat::Format21c,
-            Opcode::SPUT_CHAR => InstructionFormat::Format21c,
-            Opcode::SPUT_SHORT => InstructionFormat::Format21c,
-            Opcode::INVOKE_VIRTUAL => InstructionFormat::Format35c,
-            Opcode::INVOKE_SUPER => InstructionFormat::Format35c,
-            Opcode::INVOKE_DIRECT => InstructionFormat::Format35c,
-            Opcode::INVOKE_STATIC => InstructionFormat::Format35c,
-            Opcode::INVOKE_INTERFACE => InstructionFormat::Format35c,
-            Opcode::INVOKE_VIRTUAL_RANGE => InstructionFormat::Format3rc,
-            Opcode::INVOKE_SUPER_RANGE => InstructionFormat::Format3rc,
-            Opcode::INVOKE_DIRECT_RANGE => InstructionFormat::Format3rc,
-            Opcode::INVOKE_STATIC_RANGE => InstructionFormat::Format3rc,
-            Opcode::INVOKE_INTERFACE_RANGE => InstructionFormat::Format3rc,
-            Opcode::NEG_INT => InstructionFormat::Format12x,
-            Opcode::NOT_INT => InstructionFormat::Format12x,
-            Opcode::NEG_LONG => InstructionFormat::Format12x,
-            Opcode::NOT_LONG => InstructionFormat::Format12x,
-            Opcode::NEG_FLOAT => InstructionFormat::Format12x,
-            Opcode::NEG_DOUBLE => InstructionFormat::Format12x,
-            Opcode::INT_TO_LONG => InstructionFormat::Format12x,
-            Opcode::INT_TO_FLOAT => InstructionFormat::Format12x,
-            Opcode::INT_TO_DOUBLE => InstructionFormat::Format12x,
-            Opcode::LONG_TO_INT => InstructionFormat::Format12x,
-            Opcode::LONG_TO_FLOAT => InstructionFormat::Format12x,
-            Opcode::LONG_TO_DOUBLE => InstructionFormat::Format12x,
-            Opcode::FLOAT_TO_INT => InstructionFormat::Format12x,
-            Opcode::FLOAT_TO_LONG => InstructionFormat::Format12x,
-            Opcode::FLOAT_TO_DOUBLE => InstructionFormat::Format12x,
-            Opcode::DOUBLE_TO_INT => InstructionFormat::Format12x,
-            Opcode::DOUBLE_TO_LONG => InstructionFormat::Format12x,
-            Opcode::DOUBLE_TO_FLOAT => InstructionFormat::Format12x,
-            Opcode::INT_TO_BYTE => InstructionFormat::Format12x,
-            Opcode::INT_TO_CHAR => InstructionFormat::Format12x,
-            Opcode::INT_TO_SHORT => InstructionFormat::Format12x,
-            Opcode::ADD_INT => InstructionFormat::Format23x,
-            Opcode::SUB_INT => InstructionFormat::Format23x,
-            Opcode::MUL_INT => InstructionFormat::Format23x,
-            Opcode::DIV_INT => InstructionFormat::Format23x,
-            Opcode::REM_INT => InstructionFormat::Format23x,
-            Opcode::AND_INT => InstructionFormat::Format23x,
-            Opcode::OR_INT => InstructionFormat::Format23x,
-            Opcode::XOR_INT => InstructionFormat::Format23x,
-            Opcode::SHL_INT => InstructionFormat::Format23x,
-            Opcode::SHR_INT => InstructionFormat::Format23x,
-            Opcode::USHR_INT => InstructionFormat::Format23x,
-            Opcode::ADD_LONG => InstructionFormat::Format23x,
-            Opcode::SUB_LONG => InstructionFormat::Format23x,
-            Opcode::MUL_LONG => InstructionFormat::Format23x,
-            Opcode::DIV_LONG => InstructionFormat::Format23x,
-            Opcode::REM_LONG => InstructionFormat::Format23x,
-            Opcode::AND_LONG => InstructionFormat::Format23x,
-            Opcode::OR_LONG => InstructionFormat::Format23x,
-            Opcode::XOR_LONG => InstructionFormat::Format23x,
-            Opcode::SHL_LONG => InstructionFormat::Format23x,
-            Opcode::SHR_LONG => InstructionFormat::Format23x,
-            Opcode::USHR_LONG => InstructionFormat::Format23x,
-            Opcode::ADD_FLOAT => InstructionFormat::Format23x,
-            Opcode::SUB_FLOAT => InstructionFormat::Format23x,
-            Opcode::MUL_FLOAT => InstructionFormat::Format23x,
-            Opcode::DIV_FLOAT => InstructionFormat::Format23x,
-            Opcode::REM_FLOAT => InstructionFormat::Format23x,
-            Opcode::ADD_DOUBLE => InstructionFormat::Format23x,
-            Opcode::SUB_DOUBLE => InstructionFormat::Format23x,
-            Opcode::MUL_DOUBLE => InstructionFormat::Format23x,
-            Opcode::DIV_DOUBLE => InstructionFormat::Format23x,
-            Opcode::REM_DOUBLE => InstructionFormat::Format23x,
-            Opcode::ADD_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::SUB_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::MUL_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::DIV_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::REM_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::AND_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::OR_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::XOR_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::SHL_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::SHR_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::USHR_INT_2ADDR => InstructionFormat::Format12x,
-            Opcode::ADD_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::SUB_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::MUL_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::DIV_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::REM_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::AND_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::OR_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::XOR_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::SHL_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::SHR_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::USHR_LONG_2ADDR => InstructionFormat::Format12x,
-            Opcode::ADD_FLOAT_2ADDR => InstructionFormat::Format12x,
-            Opcode::SUB_FLOAT_2ADDR => InstructionFormat::Format12x,
-            Opcode::MUL_FLOAT_2ADDR => InstructionFormat::Format12x,
-            Opcode::DIV_FLOAT_2ADDR => InstructionFormat::Format12x,
-            Opcode::REM_FLOAT_2ADDR => InstructionFormat::Format12x,
-            Opcode::ADD_DOUBLE_2ADDR => InstructionFormat::Format12x,
-            Opcode::SUB_DOUBLE_2ADDR => InstructionFormat::Format12x,
-            Opcode::MUL_DOUBLE_2ADDR => InstructionFormat::Format12x,
-            Opcode::DIV_DOUBLE_2ADDR => InstructionFormat::Format12x,
-            Opcode::REM_DOUBLE_2ADDR => InstructionFormat::Format12x,
-            Opcode::ADD_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::RSUB_INT => InstructionFormat::Format22s,
-            Opcode::MUL_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::DIV_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::REM_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::AND_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::OR_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::XOR_INT_LIT16 => InstructionFormat::Format22s,
-            Opcode::ADD_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::RSUB_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::MUL_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::DIV_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::REM_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::AND_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::OR_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::XOR_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::SHL_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::SHR_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::USHR_INT_LIT8 => InstructionFormat::Format22b,
-            Opcode::INVOKE_POLYMORPHIC => InstructionFormat::Format45cc,
-            Opcode::INVOKE_POLYMORPHIC_RANGE => InstructionFormat::Format4rcc,
-            Opcode::INVOKE_CUSTOM => InstructionFormat::Format35c,
-            Opcode::INVOKE_CUSTOM_RANGE => InstructionFormat::Format3rc,
-            Opcode::CONST_METHOD_HANDLE => InstructionFormat::Format21c,
-            Opcode::CONST_METHOD_TYPE => InstructionFormat::Format21c,
-        }
-    }
-}
-
-impl From<u8> for Opcode {
-    fn from(value: u8) -> Self {
-        unsafe { std::mem::transmute(value) }
-    }
+declare_opcodes! {
+    0x00 => NOP, "nop", Format10x;
+    0x01 => MOVE, "move", Format12x;
+    0x02 => MOVE_FROM16, "move/from16", Format22x;
+    0x03 => MOVE_16, "move/16", Format32x;
+    0x04 => MOVE_WIDE, "move-wide", Format12x;
+    0x05 => MOVE_WIDE_FROM16, "move-wide/from16", Format22x;
+    0x06 => MOVE_WIDE_16, "move-wide/16", Format32x;
+    0x07 => MOVE_OBJECT, "move-object", Format12x;
+    0x08 => MOVE_OBJECT_FROM16, "move-object/from16", Format22x;
+    0x09 => MOVE_OBJECT_16, "move-object/16", Format32x;
+    0x0a => MOVE_RESULT, "move-result", Format11x;
+    0x0b => MOVE_RESULT_WIDE, "move-result-wide", Format11x;
+    0x0c => MOVE_RESULT_OBJECT, "move-result-object", Format11x;
+    0x0d => MOVE_EXCEPTION, "move-exception", Format11x;
+    0x0e => RETURN_VOID, "return-void", Format10x;
+    0x0f => RETURN, "return", Format11x;
+    0x10 => RETURN_WIDE, "return-wide", Format11x;
+    0x11 => RETURN_OBJECT, "return-object", Format11x;
+    0x12 => CONST_4, "const/4", Format11n;
+    0x13 => CONST_16, "const/16", Format21s;
+    0x14 => CONST, "const", Format31i;
+    0x15 => CONST_HIGH16, "const/high16", Format21h;
+    0x16 => CONST_WIDE_16, "const-wide/16", Format21s;
+    0x17 => CONST_WIDE_32, "const-wide/32", Format31i;
+    0x18 => CONST_WIDE, "const-wide", Format51l;
+    0x19 => CONST_WIDE_HIGH16, "const-wide/high16", Format21h;
+    0x1a => CONST_STRING, "const-string", Format21c;
+    0x1b => CONST_STRING_JUMBO, "const-string/jumbo", Format31c;
+    0x1c => CONST_CLASS, "const-class", Format21c;
+    0x1d => MONITOR_ENTER, "monitor-enter", Format11x;
+    0x1e => MONITOR_EXIT, "monitor-exit", Format11x;
+    0x1f => CHECK_CAST, "check-cast", Format21c;
+    0x20 => INSTANCE_OF, "instance-of", Format22c;
+    0x21 => ARRAY_LENGTH, "array-length", Format12x;
+    0x22 => NEW_INSTANCE, "new-instance", Format21c;
+    0x23 => NEW_ARRAY, "new-array", Format22c;
+    0x24 => FILLED_NEW_ARRAY, "filled-new-array", Format35c;
+    0x25 => FILLED_NEW_ARRAY_RANGE, "filled-new-array/range", Format3rc;
+    0x26 => FILL_ARRAY_DATA, "fill-array-data", Format31t;
+    0x27 => THROW, "throw", Format11x;
+    0x28 => GOTO, "goto", Format10t;
+    0x29 => GOTO_16, "goto/16", Format20t;
+    0x2a => GOTO_32, "goto/32", Format30t;
+    0x2b => PACKED_SWITCH, "packed-switch", Format31t;
+    0x2c => SPARSE_SWITCH, "sparse-switch", Format31t;
+    0x2d => CMPL_FLOAT, "cmpl-float", Format23x;
+    0x2e => CMPG_FLOAT, "cmpg-float", Format23x;
+    0x2f => CMPL_DOUBLE, "cmpl-double", Format23x;
+    0x30 => CMPG_DOUBLE, "cmpg-double", Format23x;
+    0x31 => CMP_LONG, "cmp-long", Format23x;
+    0x32 => IF_EQ, "if-eq", Format22t;
+    0x33 => IF_NE, "if-ne", Format22t;
+    0x34 => IF_LT, "if-lt", Format22t;
+    0x35 => IF_GE, "if-ge", Format22t;
+    0x36 => IF_GT, "if-gt", Format22t;
+    0x37 => IF_LE, "if-le", Format22t;
+    0x38 => IF_EQZ, "if-eqz", Format21t;
+    0x39 => IF_NEZ, "if-nez", Format21t;
+    0x3a => IF_LTZ, "if-ltz", Format21t;
+    0x3b => IF_GEZ, "if-gez", Format21t;
+    0x3c => IF_GTZ, "if-gtz", Format21t;
+    0x3d => IF_LEZ, "if-lex", Format21t;
+    0x44 => AGET, "aget", Format23x;
+    0x45 => AGET_WIDE, "aget-wide", Format23x;
+    0x46 => AGET_OBJECT, "aget-object", Format23x;
+    0x47 => AGET_BOOLEAN, "aget-boolean", Format23x;
+    0x48 => AGET_BYTE, "aget-byte", Format23x;
+    0x49 => AGET_CHAR, "aget-char", Format23x;
+    0x4a => AGET_SHORT, "aget-short", Format23x;
+    0x4b => APUT, "aput", Format23x;
+    0x4c => APUT_WIDE, "aput-wide", Format23x;
+    0x4d => APUT_OBJECT, "aput-object", Format23x;
+    0x4e => APUT_BOOLEAN, "aput-boolean", Format23x;
+    0x4f => APUT_BYTE, "aput-byte", Format23x;
+    0x50 => APUT_CHAR, "aput-char", Format23x;
+    0x51 => APUT_SHORT, "aput-short", Format23x;
+    0x52 => IGET, "iget", Format22c;
+    0x53 => IGET_WIDE, "iget-wide", Format22c;
+    0x54 => IGET_OBJECT, "iget-object", Format22c;
+    0x55 => IGET_BOOLEAN, "iget-boolean", Format22c;
+    0x56 => IGET_BYTE, "iget-byte", Format22c;
+    0x57 => IGET_CHAR, "iget-char", Format22c;
+    0x58 => IGET_SHORT, "iget-short", Format22c;
+    0x59 => IPUT, "iput", Format22c;
+    0x5a => IPUT_WIDE, "iput-wide", Format22c;
+    0x5b => IPUT_OBJECT, "iput-object", Format22c;
+    0x5c => IPUT_BOOLEAN, "iput-boolean", Format22c;
+    0x5d => IPUT_BYTE, "iput-byte", Format22c;
+    0x5e => IPUT_CHAR, "iput-char", Format22c;
+    0x5f => IPUT_SHORT, "iput-short", Format22c;
+    0x60 => SGET, "sget", Format21c;
+    0x61 => SGET_WIDE, "sget-wide", Format21c;
+    0x62 => SGET_OBJECT, "sget-object", Format21c;
+    0x63 => SGET_BOOLEAN, "sget-boolean", Format21c;
+    0x64 => SGET_BYTE, "sget-byte", Format21c;
+    0x65 => SGET_CHAR, "sget-char", Format21c;
+    0x66 => SGET_SHORT, "sget-short", Format21c;
+    0x67 => SPUT, "sput", Format21c;
+    0x68 => SPUT_WIDE, "sput-wide", Format21c;
+    0x69 => SPUT_OBJECT, "sput-object", Format21c;
+    0x6a => SPUT_BOOLEAN, "sput-boolean", Format21c;
+    0x6b => SPUT_BYTE, "sput-byte", Format21c;
+    0x6c => SPUT_CHAR, "sput-char", Format21c;
+    0x6d => SPUT_SHORT, "sput-short", Format21c;
+    0x6e => INVOKE_VIRTUAL, "invoke-virtual", Format35c;
+    0x6f => INVOKE_SUPER, "invoke-super", Format35c;
+    0x70 => INVOKE_DIRECT, "invoke-direct", Format35c;
+    0x71 => INVOKE_STATIC, "invoke-static", Format35c;
+    0x72 => INVOKE_INTERFACE, "invoke-interface", Format35c;
+    0x74 => INVOKE_VIRTUAL_RANGE, "invoke-virtual/range", Format3rc;
+    0x75 => INVOKE_SUPER_RANGE, "invoke-super/range", Format3rc;
+    0x76 => INVOKE_DIRECT_RANGE, "invoke-direct/range", Format3rc;
+    0x77 => INVOKE_STATIC_RANGE, "invoke-static/range", Format3rc;
+    0x78 => INVOKE_INTERFACE_RANGE, "invoke-interface/range", Format3rc;
+    0x7b => NEG_INT, "neg-int", Format12x;
+    0x7c => NOT_INT, "not-int", Format12x;
+    0x7d => NEG_LONG, "neg-long", Format12x;
+    0x7e => NOT_LONG, "not-long", Format12x;
+    0x7f => NEG_FLOAT, "neg-float", Format12x;
+    0x80 => NEG_DOUBLE, "neg-double", Format12x;
+    0x81 => INT_TO_LONG, "int-to-long", Format12x;
+    0x82 => INT_TO_FLOAT, "int-to-float", Format12x;
+    0x83 => INT_TO_DOUBLE, "int-to-double", Format12x;
+    0x84 => LONG_TO_INT, "long-to-int", Format12x;
+    0x85 => LONG_TO_FLOAT, "long-to-float", Format12x;
+    0x86 => LONG_TO_DOUBLE, "long-to-double", Format12x;
+    0x87 => FLOAT_TO_INT, "float-to-int", Format12x;
+    0x88 => FLOAT_TO_LONG, "float-to-long", Format12x;
+    0x89 => FLOAT_TO_DOUBLE, "float-to-double", Format12x;
+    0x8a => DOUBLE_TO_INT, "double-to-int", Format12x;
+    0x8b => DOUBLE_TO_LONG, "double-to-long", Format12x;
+    0x8c => DOUBLE_TO_FLOAT, "double-to-float", Format12x;
+    0x8d => INT_TO_BYTE, "int-to-byte", Format12x;
+    0x8e => INT_TO_CHAR, "int-to-char", Format12x;
+    0x8f => INT_TO_SHORT, "int-to-short", Format12x;
+    0x90 => ADD_INT, "add-int", Format23x;
+    0x91 => SUB_INT, "sub-int", Format23x;
+    0x92 => MUL_INT, "mul-int", Format23x;
+    0x93 => DIV_INT, "div-int", Format23x;
+    0x94 => REM_INT, "rem-int", Format23x;
+    0x95 => AND_INT, "and-int", Format23x;
+    0x96 => OR_INT, "or-int", Format23x;
+    0x97 => XOR_INT, "xor-int", Format23x;
+    0x98 => SHL_INT, "shl-int", Format23x;
+    0x99 => SHR_INT, "shr-int", Format23x;
+    0x9a => USHR_INT, "ushr-int", Format23x;
+    0x9b => ADD_LONG, "add-long", Format23x;
+    0x9c => SUB_LONG, "sub-long", Format23x;
+    0x9d => MUL_LONG, "mul-long", Format23x;
+    0x9e => DIV_LONG, "div-long", Format23x;
+    0x9f => REM_LONG, "rem-long", Format23x;
+    0xa0 => AND_LONG, "and-long", Format23x;
+    0xa1 => OR_LONG, "or-long", Format23x;
+    0xa2 => XOR_LONG, "xor-long", Format23x;
+    0xa3 => SHL_LONG, "shl-long", Format23x;
+    0xa4 => SHR_LONG, "shr-long", Format23x;
+    0xa5 => USHR_LONG, "ushr-long", Format23x;
+    0xa6 => ADD_FLOAT, "add-float", Format23x;
+    0xa7 => SUB_FLOAT, "sub-float", Format23x;
+    0xa8 => MUL_FLOAT, "mul-float", Format23x;
+    0xa9 => DIV_FLOAT, "div-float", Format23x;
+    0xaa => REM_FLOAT, "rem-float", Format23x;
+    0xab => ADD_DOUBLE, "add-double", Format23x;
+    0xac => SUB_DOUBLE, "sub-double", Format23x;
+    0xad => MUL_DOUBLE, "mul-double", Format23x;
+    0xae => DIV_DOUBLE, "div-double", Format23x;
+    0xaf => REM_DOUBLE, "rem-double", Format23x;
+    0xb0 => ADD_INT_2ADDR, "add-int/2addr", Format12x;
+    0xb1 => SUB_INT_2ADDR, "sub-int/2addr", Format12x;
+    0xb2 => MUL_INT_2ADDR, "mul-int/2addr", Format12x;
+    0xb3 => DIV_INT_2ADDR, "div-int/2addr", Format12x;
+    0xb4 => REM_INT_2ADDR, "rem-int/2addr", Format12x;
+    0xb5 => AND_INT_2ADDR, "and-int/2addr", Format12x;
+    0xb6 => OR_INT_2ADDR, "or-int/2addr", Format12x;
+    0xb7 => XOR_INT_2ADDR, "xor-int/2addr", Format12x;
+    0xb8 => SHL_INT_2ADDR, "shl-int/2addr", Format12x;
+    0xb9 => SHR_INT_2ADDR, "shr-int/2addr", Format12x;
+    0xba => USHR_INT_2ADDR, "ushr-int/2addr", Format12x;
+    0xbb => ADD_LONG_2ADDR, "add-long/2addr", Format12x;
+    0xbc => SUB_LONG_2ADDR, "sub-long/2addr", Format12x;
+    0xbd => MUL_LONG_2ADDR, "mul-long/2addr", Format12x;
+    0xbe => DIV_LONG_2ADDR, "div-long/2addr", Format12x;
+    0xbf => REM_LONG_2ADDR, "rem-long/2addr", Format12x;
+    0xc0 => AND_LONG_2ADDR, "and-long/2addr", Format12x;
+    0xc1 => OR_LONG_2ADDR, "or-long/2addr", Format12x;
+    0xc2 => XOR_LONG_2ADDR, "xor-long/2addr", Format12x;
+    0xc3 => SHL_LONG_2ADDR, "shl-long/2addr", Format12x;
+    0xc4 => SHR_LONG_2ADDR, "shr-long/2addr", Format12x;
+    0xc5 => USHR_LONG_2ADDR, "ushr-long/2addr", Format12x;
+    0xc6 => ADD_FLOAT_2ADDR, "add-float/2addr", Format12x;
+    0xc7 => SUB_FLOAT_2ADDR, "sub-float/2addr", Format12x;
+    0xc8 => MUL_FLOAT_2ADDR, "mul-float/2addr", Format12x;
+    0xc9 => DIV_FLOAT_2ADDR, "div-float/2addr", Format12x;
+    0xca => REM_FLOAT_2ADDR, "rem-float/2addr", Format12x;
+    0xcb => ADD_DOUBLE_2ADDR, "add-double/2addr", Format12x;
+    0xcc => SUB_DOUBLE_2ADDR, "sub-double/2addr", Format12x;
+    0xcd => MUL_DOUBLE_2ADDR, "mul-double/2addr", Format12x;
+    0xce => DIV_DOUBLE_2ADDR, "div-double/2addr", Format12x;
+    0xcf => REM_DOUBLE_2ADDR, "rem-double/2addr", Format12x;
+    0xd0 => ADD_INT_LIT16, "add-int/lit16", Format22s;
+    0xd1 => RSUB_INT, "rsub-int", Format22s;
+    0xd2 => MUL_INT_LIT16, "mul-int/lit16", Format22s;
+    0xd3 => DIV_INT_LIT16, "div-int/lit16", Format22s;
+    0xd4 => REM_INT_LIT16, "rem-int/lit16", Format22s;
+    0xd5 => AND_INT_LIT16, "and-int/lit16", Format22s;
+    0xd6 => OR_INT_LIT16, "or-int/lit16", Format22s;
+    0xd7 => XOR_INT_LIT16, "xor-int/lit16", Format22s;
+    0xd8 => ADD_INT_LIT8, "add-int/lit8", Format22b;
+    0xd9 => RSUB_INT_LIT8, "rsub-int/lit8", Format22b;
+    0xda => MUL_INT_LIT8, "mul-int/lit8", Format22b;
+    0xdb => DIV_INT_LIT8, "div-int/lit8", Format22b;
+    0xdc => REM_INT_LIT8, "rem-int/lit8", Format22b;
+    0xdd => AND_INT_LIT8, "and-int/lit8", Format22b;
+    0xde => OR_INT_LIT8, "or-int/lit8", Format22b;
+    0xdf => XOR_INT_LIT8, "xor-int/lit8", Format22b;
+    0xe0 => SHL_INT_LIT8, "shl-int/lit8", Format22b;
+    0xe1 => SHR_INT_LIT8, "shr-int/lit8", Format22b;
+    0xe2 => USHR_INT_LIT8, "ushr-int/lit8", Format22b;
+    0xfa => INVOKE_POLYMORPHIC, "invoke-polymorphic", Format45cc;
+    0xfb => INVOKE_POLYMORPHIC_RANGE, "invoke-polymorphic/range", Format4rcc;
+    0xfc => INVOKE_CUSTOM, "invoke-custom", Format35c;
+    0xfd => INVOKE_CUSTOM_RANGE, "invoke-custom/range", Format3rc;
+    0xfe => CONST_METHOD_HANDLE, "const-method-handle", Format21c;
+    0xff => CONST_METHOD_TYPE, "const-method-type", Format21c;
 }
 
 pub fn disassemble_method(
@@ -856,7 +402,7 @@ pub fn disassemble_method(
         instruction_count += 1;
         let address = pc * 2;
         let instruction_unit = insns[pc];
-        let opcode = Opcode::from(instruction_unit as u8); // Low byte is the primary opcode
+        let opcode = Opcode::from_byte(instruction_unit as u8).expect("Illegal instruction"); // Low byte is the primary opcode
 
         let name = opcode.name();
         let format = opcode.format();
@@ -911,26 +457,29 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0x0F;
                 let imm = insns[pc + 1];
                 (format!("{} v{}, +{}", name, v_aa, imm), 2)
-            },
+            }
             InstructionFormat::Format21s => {
                 // op vAA, #+BBBB
                 let v_aa = (instruction_unit >> 8) & 0x0F;
                 let imm = insns[pc + 1];
                 (format!("{} v{}, #+{}", name, v_aa, imm), 2)
-            },
+            }
             InstructionFormat::Format21h => {
                 // op vAA, #+BBBB0000
                 // op vAA, #+BBBB000000000000
                 let v_aa = (instruction_unit >> 8) & 0x0F;
                 let imm = insns[pc + 1];
                 (format!("{} v{}, #+{}", name, v_aa, imm), 2)
-            },
+            }
             InstructionFormat::Format21c => {
                 let v_aa = (instruction_unit >> 8) & 0x0F;
                 let bbbb = insns[pc + 1];
 
-                (format!("{} v{}, <type,field,met,proto,string>@{}", name, v_aa, bbbb), 2)
-            },
+                (
+                    format!("{} v{}, <type,field,met,proto,string>@{}", name, v_aa, bbbb),
+                    2,
+                )
+            }
             InstructionFormat::Format23x => {
                 // byte 1 AA|op
                 // byte 2 CC|BB
@@ -939,8 +488,7 @@ pub fn disassemble_method(
                 let v_cc = insns[pc + 1] & 0xFF;
 
                 (format!("{} v{}, v{}, v{}", name, v_aa, v_bb, v_cc), 2)
-
-            },
+            }
             InstructionFormat::Format22b => (format!("{}", name,), 2),
             InstructionFormat::Format22t => (format!("{}", name,), 2),
             InstructionFormat::Format22s => (format!("{}", name,), 2),
