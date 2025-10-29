@@ -10,16 +10,21 @@ use crate::types::{
 };
 
 use log::{debug, error, info, warn};
-use std::mem::size_of;
+use std::{char::REPLACEMENT_CHARACTER, mem::size_of};
 
-pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem {
+pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem<'_> {
     let mut cursor = offset;
-    let size = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(size);
-    let data = &dexfile[cursor..cursor + size as usize];
+    let (utf16_size, uleb_bytes) = read_uleb128(&dexfile[cursor..]);
+    cursor += uleb_bytes;
+    let d_start = cursor;
+    let mut d_end = cursor;
+    while d_end < dexfile.len() && dexfile[d_end] != 0 {
+        d_end += 1;
+    }
+    let data = &dexfile[d_start..d_end];
 
     StringDataItem {
-        size: size as u16,
+        size: utf16_size as u16,
         data,
     }
 }
@@ -52,9 +57,8 @@ pub fn get_items<T>(dexfile: &[u8], offset: usize, count: usize) -> &[T] {
     unsafe { std::slice::from_raw_parts(dexfile[start_byte..end_byte].as_ptr() as *const T, count) }
 }
 
-const REPLACEMENT_CHAR: char = '\u{FFFD}'; // Unicode Replacement Character
-
-// TODO(sfx): Fix the salvaging logic to be more robust
+// MUTF-8 (Modified UTF-8) is used in dex files for whatever reason
+// they only support 1,2,3 byte encodings.
 pub fn decode_mutf8(input: &[u8]) -> DecodedString {
     let mut result = String::new();
     let mut i = 0;
@@ -63,19 +67,38 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
         if input[i] == 0 {
             break; // End of string
         } else if input[i] < 0x80 {
-            // 1-byte sequence
+            // 1-byte sequence under 0x80
             result.push(input[i] as char);
             i += 1;
-        } else if input[i] < 0xE0 && input[i] >= 0xC0 {
+        // Check if the byte is in range for 2 byte encodings.
+        } else if input[i] >= 0xC0 && input[i] < 0xE0  {
             // 2-byte sequence
             if i + 1 >= input.len() {
                 // Try to salvage the last byte as a single character
-                result.push(REPLACEMENT_CHAR);
+                result.push(input[i] as char);
+                debug!("Decoded string: {} from {:x?}", result, input);
                 return DecodedString {
                     string: result,
                     error: Some(Mutf8Error::UnexpectedEndOfInput(i)),
                 };
             }
+            // Validate the second byte of the sequence i.e of the format
+            // 10yyyyyy so we mask with 0xc0(0b11000000) to isolate 2 high bits
+            // and make sure it is 0x80(0b10000000)
+            if input[i+1] & 0xc0 != 0x80 {
+                result.push(input[i] as char);
+                i += 1;
+                continue;
+            }
+
+            // Handle utf-8 nullbytes
+            if input[i] == 0xC0 && input[i + 1] == 0x80 {
+                result.push('\0');
+                i += 2;
+                continue;
+            }
+
+
             let code_point = (((input[i] & 0x1F) as u32) << 6) | ((input[i + 1] & 0x3F) as u32);
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
@@ -83,28 +106,38 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                     // Try to salvage these bytes as single characters
                     result.push(input[i] as char);
                     result.push(input[i + 1] as char);
-                    return DecodedString {
-                        string: result,
-                        error: Some(Mutf8Error::InvalidSequence(i)),
-                    };
+                    debug!("Invalid 2-byte sequence at {}: {:02x} {:02x}", i, input[i], input[i + 1]);
                 }
             }
             i += 2;
+        // Check if the byte is the first byte range of 3-byte encoding.
+        // TODO(sfx): Check for surrogate pairs.
         } else if input[i] & 0xF0 == 0xE0 {
             // 3-byte sequence
             if i + 2 >= input.len() {
                 // Try to salvage the remaining bytes as single characters
-                for j in i..input.len() {
-                    result.push(input[j] as char);
+                for _ in i..input.len() {
+                    result.push(input[i] as char);
                 }
+                debug!("Decoded string: {} from {:x?}", result, input);
                 return DecodedString {
                     string: result,
                     error: Some(Mutf8Error::UnexpectedEndOfInput(i)),
                 };
             }
+
+            if input[i + 1] & 0xC0 != 0x80 || input[i + 2] & 0xC0 != 0x80 {
+                // Salvage the invalid start byte as Latin-1, then continue
+                result.push(input[i] as char);
+                i += 1;
+                continue;
+            }
+
             let code_point = (((input[i] & 0x0F) as u32) << 12)
                 | (((input[i + 1] & 0x3F) as u32) << 6)
                 | ((input[i + 2] & 0x3F) as u32);
+
+
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
                 None => {
@@ -112,6 +145,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                     for j in i..i + 3 {
                         result.push(input[j] as char);
                     }
+                    debug!("Decoded string: {} from {:x?}", result, input);
                     return DecodedString {
                         string: result,
                         error: Some(Mutf8Error::InvalidSequence(i)),
@@ -124,6 +158,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             result.push(input[i] as char);
             i += 1;
             if i == input.len() {
+                debug!("Decoded string: {} from {:x?}", result, input);
                 return DecodedString {
                     string: result,
                     error: Some(Mutf8Error::InvalidSequence(i - 1)),
@@ -132,17 +167,20 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
         }
     }
 
+    debug!("Decoded string: {} from {:x?}", result, input);
     DecodedString {
         string: result,
         error: None,
     }
 }
 
-pub fn read_uleb128(input: &[u8]) -> u32 {
+pub fn read_uleb128(input: &[u8]) -> (u32, usize) {
     let mut result = 0;
     let mut shift = 0;
+    let mut bytes_read = 0;
 
     for &byte in input {
+        bytes_read += 1;
         result |= ((byte & 0x7f) as u32) << shift;
         if byte & 0x80 == 0 {
             break;
@@ -150,7 +188,7 @@ pub fn read_uleb128(input: &[u8]) -> u32 {
         shift += 7;
     }
 
-    result
+    (result, bytes_read)
 }
 
 pub fn uleb128_size(value: u32) -> usize {
@@ -185,11 +223,11 @@ pub fn get_u16_items(dexfile: &[u8], offset: usize, count: usize) -> Vec<u16> {
 pub fn parse_encoded_field(dexfile: &[u8], offset: usize) -> (EncodedField, usize) {
     let mut cursor = offset;
 
-    let field_idx_diff = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(field_idx_diff);
+    let (field_idx_diff, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let access_flags = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(access_flags);
+    let (access_flags, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
     (
         EncodedField {
@@ -203,14 +241,14 @@ pub fn parse_encoded_field(dexfile: &[u8], offset: usize) -> (EncodedField, usiz
 pub fn parse_encoded_method(dexfile: &[u8], offset: usize) -> (EncodedMethod, usize) {
     let mut cursor = offset;
 
-    let method_idx_diff = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(method_idx_diff);
+    let (method_idx_diff, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let access_flags = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(access_flags);
+    let (access_flags, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let code_off = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(code_off);
+    let (code_off, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
     (
         EncodedMethod {
@@ -225,17 +263,17 @@ pub fn parse_encoded_method(dexfile: &[u8], offset: usize) -> (EncodedMethod, us
 pub fn parse_class_data_item(dexfile: &[u8], offset: usize) -> (ClassDataItem, usize) {
     let mut cursor = offset;
 
-    let static_fields_size = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(static_fields_size);
+    let (static_fields_size, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let instance_fields_size = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(instance_fields_size);
+    let (instance_fields_size, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let direct_methods_size = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(direct_methods_size);
+    let (direct_methods_size, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
-    let virtual_methods_size = read_uleb128(&dexfile[cursor..]);
-    cursor += uleb128_size(virtual_methods_size);
+    let (virtual_methods_size, size) = read_uleb128(&dexfile[cursor..]);
+    cursor += size;
 
     let mut static_fields = Vec::with_capacity(static_fields_size as usize);
     for _ in 0..static_fields_size {

@@ -1,9 +1,18 @@
+use std::fmt::Debug;
+
 use bitflags::bitflags;
 
 #[repr(C)]
 pub struct StringDataItem<'a> {
     pub size: u16,
     pub data: &'a [u8],
+}
+
+impl Debug for StringDataItem<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Log undecoded data
+        write!(f, "StringDataItem {{ size: {}, data: {:?} }}", self.size, self.data)
+    }
 }
 
 #[repr(C)]

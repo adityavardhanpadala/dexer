@@ -11,5 +11,18 @@
     "request": "launch",
     "program": "./target/release/dexer",
     "args": ["./classes.dex", "--output", "op3"]
+  },
+  {
+    "label": "Debug Dexer (debug)",
+    "adapter": "CodeLLDB",
+    "build": {
+      "label": "Build Dexer",
+      "command": "cargo",
+      "args": ["build"]
+    },
+    "sourceLanguages": ["rust"],
+    "request": "launch",
+    "program": "./target/debug/dexer",
+    "args": ["./classes.dex", "--output", "op3"]
   }
 ]

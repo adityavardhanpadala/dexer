@@ -151,12 +151,20 @@ impl Header {
     }
 }
 
-// Renamed DexParsedData to avoid conflict with Dex struct name
+#[allow(dead_code)]
 #[derive(Debug)]
-struct DexParsedData<'a> {
-    dex_struct: Dex<'a>,
-    string_map: HashMap<u32, String>,
-    type_map: HashMap<u32, String>,
+struct Dex<'a> {
+    header: &'a Header,
+    string_ids: &'a [u32],
+    type_ids: &'a [u32],
+    proto_ids: &'a [proto_id_item],
+    field_ids: &'a [field_id_item],
+    method_ids: &'a [method_id_item],
+    class_defs: &'a [class_def_item],
+    call_site_ids: &'a [u8],
+    method_handles: &'a [u8],
+    data: &'a [u8],
+    link_data: &'a [u8],
 }
 
 impl Dex<'_> {
@@ -197,6 +205,7 @@ impl Dex<'_> {
             .iter()
             .map(|&item_offset| {
                 let str_data_item = get_string_data_item(dexfile, item_offset as usize);
+                debug!("String data item: {:?} len: {:?}",str_data_item, str_data_item.size);
                 let decoded = decode_mutf8(str_data_item.data);
                 // Log decoding errors if any
                 if let Some(err) = decoded.error {
@@ -271,22 +280,6 @@ impl Dex<'_> {
 
         Ok((dex_struct, string_map, type_map))
     }
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct Dex<'a> {
-    header: &'a Header,
-    string_ids: &'a [u32],
-    type_ids: &'a [u32],
-    proto_ids: &'a [proto_id_item],
-    field_ids: &'a [field_id_item],
-    method_ids: &'a [method_id_item],
-    class_defs: &'a [class_def_item],
-    call_site_ids: &'a [u8],
-    method_handles: &'a [u8],
-    data: &'a [u8],
-    link_data: &'a [u8],
 }
 
 fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
@@ -544,7 +537,6 @@ fn main() -> Result<()> {
         match Dex::new(first_file) {
             Ok((dex_struct, string_map, type_map)) => {
                 info!("Successfully parsed DEX structure.");
-                debug!("{:#?}", dex_struct); // Debug print the structure
 
                 // Attempt to dump disassembly if requested with timing measurements
                 let start_time = Instant::now();
