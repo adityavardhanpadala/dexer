@@ -8,6 +8,8 @@ use crate::types::{
     StringDataItem,
     proto_id_item, // Added proto_id_item
 };
+
+use log::{debug, error, info, warn};
 use std::mem::size_of;
 
 pub fn get_string_data_item(dexfile: &[u8], offset: usize) -> StringDataItem {
@@ -50,6 +52,9 @@ pub fn get_items<T>(dexfile: &[u8], offset: usize, count: usize) -> &[T] {
     unsafe { std::slice::from_raw_parts(dexfile[start_byte..end_byte].as_ptr() as *const T, count) }
 }
 
+const REPLACEMENT_CHAR: char = '\u{FFFD}'; // Unicode Replacement Character
+
+// TODO(sfx): Fix the salvaging logic to be more robust
 pub fn decode_mutf8(input: &[u8]) -> DecodedString {
     let mut result = String::new();
     let mut i = 0;
@@ -57,15 +62,15 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
     while i < input.len() {
         if input[i] == 0 {
             break; // End of string
-        } else if input[i] & 0x80 == 0 {
+        } else if input[i] < 0x80 {
             // 1-byte sequence
             result.push(input[i] as char);
             i += 1;
-        } else if input[i] & 0xE0 == 0xC0 {
+        } else if input[i] < 0xE0 && input[i] >= 0xC0 {
             // 2-byte sequence
             if i + 1 >= input.len() {
                 // Try to salvage the last byte as a single character
-                result.push(input[i] as char);
+                result.push(REPLACEMENT_CHAR);
                 return DecodedString {
                     string: result,
                     error: Some(Mutf8Error::UnexpectedEndOfInput(i)),

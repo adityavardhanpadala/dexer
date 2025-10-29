@@ -900,7 +900,13 @@ pub fn disassemble_method(
                 let v_bbbb = insns[pc + 1];
                 (format!("{} v{}, v{}", name, v_aa, v_bbbb), 2)
             }
-            InstructionFormat::Format22x => (format!("{}", name,), 2),
+            InstructionFormat::Format22x => {
+                // op vAA, +BBBB
+                let v_a = (instruction_unit >> 8) & 0x0F;
+                // sign extend 32 bits
+                let imm = insns[pc + 1] as i32;
+                (format!("{} v{}, #+{}", name, v_a, imm), 2)
+            }
             InstructionFormat::Format21t => (format!("{}", name,), 2),
             InstructionFormat::Format21s => (format!("{}", name,), 2),
             InstructionFormat::Format21h => (format!("{}", name,), 2),

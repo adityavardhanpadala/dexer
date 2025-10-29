@@ -1,0 +1,15 @@
+[
+  {
+    "label": "Debug Dexer (release)",
+    "adapter": "CodeLLDB",
+    "build": {
+      "label": "Build Dexer",
+      "command": "cargo",
+      "args": ["build", "--release"]
+    },
+    "sourceLanguages": ["rust"],
+    "request": "launch",
+    "program": "./target/release/dexer",
+    "args": ["./classes.dex", "--output", "op3"]
+  }
+]
