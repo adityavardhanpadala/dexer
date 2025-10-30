@@ -38,7 +38,7 @@ pub struct field_id_item {
 #[allow(non_camel_case_types)]
 pub struct method_id_item {
     pub class_idx: u16,
-    pub type_idx: u16,
+        pub proto_idx: u16,  // Index into proto_ids (was incorrectly named type_idx)
     pub name_idx: u32,
 }
 

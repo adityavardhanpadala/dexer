@@ -429,9 +429,9 @@ pub fn disassemble_method(
                 (format!("{} v{}", name, v_a), 1)
             }
             InstructionFormat::Format10t => {
-                //op +AA
-                let offset = (instruction_unit >> 8) & 0xFF;
-                let target_address = address + (offset as usize);
+                //op +AA (signed 8-bit offset)
+                let offset_raw = ((instruction_unit >> 8) & 0xFF) as i8 as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
@@ -440,9 +440,15 @@ pub fn disassemble_method(
                 (format!("{} {}", name, target_address_str), 1)
             }
             InstructionFormat::Format20t => {
-                // op +AAAA
-                let literal = insns[pc + 1];
-                (format!("{} {}", name, literal), 2)
+                // op +AAAA (signed 16-bit offset)
+                let offset_raw = insns[pc + 1] as i16 as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
+                } else {
+                    "invalid".to_string()
+                };
+                (format!("{} {}", name, target_address_str), 2)
             }
             InstructionFormat::Format20bc => {
                 // op vAA, kind@BBBB
@@ -457,10 +463,16 @@ pub fn disassemble_method(
                 (format!("{} v{}, v{}", name, v_a, v_bbbb), 2)
             }
             InstructionFormat::Format21t => {
-                // op vAA, +BBBB
+                // op vAA, +BBBB (signed 16-bit offset)
                 let v_aa = (instruction_unit >> 8) & 0x0F;
-                let imm = insns[pc + 1];
-                (format!("{} v{}, +{}", name, v_aa, imm), 2)
+                let offset_raw = insns[pc + 1] as i16 as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
+                } else {
+                    "invalid".to_string()
+                };
+                (format!("{} v{}, {}", name, v_aa, target_address_str), 2)
             }
             InstructionFormat::Format21s => {
                 // op vAA, #+BBBB
@@ -500,12 +512,12 @@ pub fn disassemble_method(
                 (format!("{} v{}, v{}, #+{}", name, v_a, v_bb, v_cc), 2)
             }
             InstructionFormat::Format22t => {
-                // op vA, vB, #+CCCC
+                // op vA, vB, +CCCC (signed 16-bit offset)
                 // B|A|op CCCC
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
-                let offset = insns[pc + 1];
-                let target_address = address + (offset as usize);
+                let offset_raw = insns[pc + 1] as i16 as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
@@ -538,11 +550,17 @@ pub fn disassemble_method(
                 (format!("{} v{}, v{}, fieldoff_{}", name, v_a, v_b, cccc), 2)
             }
             InstructionFormat::Format30t => {
-                // `ØØ|op AAAA_{lo} AAAA_{hi}`
-                let literal_lo = insns[pc + 1];
-                let literal_hi = insns[pc + 2];
-                let literal = ((literal_hi as u32) << 16) | (literal_lo as u32);
-                (format!("{} +{}", name, literal), 3)
+                // `ØØ|op AAAA_{lo} AAAA_{hi}` (signed 32-bit offset)
+                let literal_lo = insns[pc + 1] as u32;
+                let literal_hi = insns[pc + 2] as u32;
+                let offset_raw = ((literal_hi << 16) | literal_lo) as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
+                } else {
+                    "invalid".to_string()
+                };
+                (format!("{} {}", name, target_address_str), 3)
             }
             InstructionFormat::Format32x => {
                 let v_aaaa = insns[pc + 1];
@@ -557,18 +575,19 @@ pub fn disassemble_method(
                 (format!("{} v{}, #+{}", name, v_aa, bb), 3)
             }
             InstructionFormat::Format31t => {
+                // op vAA, +BBBBBBBB (signed 32-bit offset)
                 let v_aa = (instruction_unit >> 8) & 0x0F;
-                let bb_low = insns[pc + 1];
-                let bb_high = insns[pc + 2];
-                let bb = ((bb_high as u32) << 16) | (bb_low as u32);
-                let target_address = address + (bb as usize);
+                let bb_low = insns[pc + 1] as u32;
+                let bb_high = insns[pc + 2] as u32;
+                let offset_raw = ((bb_high << 16) | bb_low) as i32;
+                let target_address = ((address as i32) + offset_raw * 2) as usize;
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
                     "invalid".to_string()
                 };
 
-                (format!("{} v{}, +{}", name, v_aa, target_address_str), 3)
+                (format!("{} v{}, {}", name, v_aa, target_address_str), 3)
             }
             InstructionFormat::Format31c => {
                 let v_aa = (instruction_unit >> 8) & 0x0F;

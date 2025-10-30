@@ -2,7 +2,7 @@ mod disassembler;
 mod types;
 mod utils;
 
-use clap::Parser;
+use pico_args::Arguments;
 use std::error::Error;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -94,24 +94,67 @@ impl Stats {
 }
 
 /// Command line arguments
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[derive(Debug)]
 struct Cli {
     /// Path to the dex file(s) to process
-    #[arg(required = true)]
     files: Vec<PathBuf>,
-
     /// Output file for disassembly
-    #[arg(long)]
     output: Option<PathBuf>,
-
     /// Specific method name to disassemble (e.g., "Lcom/example/MyClass;->myMethod(II)V")
-    #[arg(long)]
     method: Option<String>,
-
     /// Show instruction throughput metrics
-    #[arg(long)]
     show_stats: bool,
+}
+
+fn parse_args() -> Result<Cli> {
+    let mut args = Arguments::from_env();
+
+    // Check for help flag
+    if args.contains(["-h", "--help"]) {
+        print_help();
+        std::process::exit(0);
+    }
+
+    // Parse optional flags
+    let output = args.opt_value_from_str("--output")?;
+    let method = args.opt_value_from_str("--method")?;
+    let show_stats = args.contains("--show-stats");
+
+    // Get remaining arguments as files
+    let files = args.finish();
+
+    if files.is_empty() {
+        eprintln!("Error: At least one DEX file must be provided");
+        print_help();
+        std::process::exit(1);
+    }
+
+    let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
+
+    Ok(Cli {
+        files,
+        output,
+        method,
+        show_stats,
+    })
+}
+
+fn print_help() {
+    println!("Dexer v0.1.0");
+    println!("A DEX file disassembler and analyzer");
+    println!();
+    println!("USAGE:");
+    println!("    dexer [OPTIONS] <FILES>...");
+    println!();
+    println!("ARGS:");
+    println!("    <FILES>    Path to the dex file(s) to process");
+    println!();
+    println!("OPTIONS:");
+    println!("    -h, --help                 Print help information");
+    println!("        --output <FILE>        Output file for disassembly");
+    println!("        --method <METHOD>       Specific method name to disassemble");
+    println!("                               (e.g., \"Lcom/example/MyClass;->myMethod(II)V\")");
+    println!("        --show-stats            Show instruction throughput metrics");
 }
 
 /// Dex Header Struct
@@ -230,12 +273,17 @@ impl Dex<'_> {
             header.type_ids_size as usize,
         );
 
+        // type_id_items contains indices into string_ids array
+        // string_ids[type_id_items[i]] gives us the offset to the string data
+        // We need to use that offset to look up in string_map
         let type_map: HashMap<u32, String> = type_id_items
             .iter()
             .enumerate()
             .filter_map(|(type_id, &string_id_idx)| {
+                // string_id_idx is an index into string_ids array, not an offset
+                let string_offset = string_id_items.get(string_id_idx as usize).copied()?;
                 string_map
-                    .get(&string_id_idx)
+                    .get(&string_offset)
                     .map(|s| (type_id as u32, s.clone()))
             })
             .collect::<HashMap<u32, String>>();
@@ -362,11 +410,11 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                 // Get the actual proto_id_item needed by the utils function
                 let proto_item =
                     dex.proto_ids
-                        .get(method_id.type_idx as usize)
+                        .get(method_id.proto_idx as usize)
                         .ok_or_else(|| {
                             format!(
                                 "Proto ID index {} out of bounds for method index {}",
-                                method_id.type_idx, method_id_index
+                                method_id.proto_idx, method_id_index
                             )
                         })?;
                 // Call the function from utils
@@ -379,6 +427,19 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                             )
                         })?;
 
+                // Get method name from string_ids
+                let method_name_offset = dex.string_ids
+                    .get(method_id.name_idx as usize)
+                    .copied()
+                    .unwrap_or(0);
+                let method_name = dex.string_map
+                    .get(&method_name_offset)
+                    .cloned()
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                
+                // Combine method name with signature: methodName(Signature)
+                let method_full_name = format!("{}{}", method_name, method_sig);
+
                 let should_disassemble =
                     cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
@@ -386,7 +447,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     writeln!(
                         writer,
                         "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
-                        method_sig, method_id_index, encoded_method.code_off
+                        method_full_name, method_id_index, encoded_method.code_off
                     )?;
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
@@ -409,7 +470,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
-                            encoded_method.code_off, method_sig
+                            encoded_method.code_off, method_full_name
                         );
                         writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
@@ -417,7 +478,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     writeln!(
                         writer,
                         "\n### Method: {} (Index: {}, Abstract or Native)",
-                        method_sig, method_id_index
+                        method_full_name, method_id_index
                     )?;
                 }
             } else {
@@ -444,11 +505,11 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                 // Get the actual proto_id_item needed by the utils function
                 let proto_item =
                     dex.proto_ids
-                        .get(method_id.type_idx as usize)
+                        .get(method_id.proto_idx as usize)
                         .ok_or_else(|| {
                             format!(
                                 "Proto ID index {} out of bounds for method index {}",
-                                method_id.type_idx, method_id_index
+                                method_id.proto_idx, method_id_index
                             )
                         })?;
                 // Call the function from utils
@@ -461,6 +522,19 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                             )
                         })?;
 
+                // Get method name from string_ids
+                let method_name_offset = dex.string_ids
+                    .get(method_id.name_idx as usize)
+                    .copied()
+                    .unwrap_or(0);
+                let method_name = dex.string_map
+                    .get(&method_name_offset)
+                    .cloned()
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                
+                // Combine method name with signature: methodName(Signature)
+                let method_full_name = format!("{}{}", method_name, method_sig);
+
                 let should_disassemble =
                     cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
@@ -468,7 +542,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     writeln!(
                         writer,
                         "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
-                        method_sig, method_id_index, encoded_method.code_off
+                        method_full_name, method_id_index, encoded_method.code_off
                     )?;
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
@@ -491,7 +565,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
-                            encoded_method.code_off, method_sig
+                            encoded_method.code_off, method_full_name
                         );
                         writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
@@ -499,7 +573,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     writeln!(
                         writer,
                         "\n### Method: {} (Index: {}, Abstract or Native)",
-                        method_sig, method_id_index
+                        method_full_name, method_id_index
                     )?;
                 }
             } else {
@@ -528,7 +602,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     info!("Dexer v0.1.0");
-    let cli = Cli::parse();
+    let cli = parse_args()?;
 
     info!("Processing files: {:?}", cli.files);
     let files = mmap_files(&cli.files)?;

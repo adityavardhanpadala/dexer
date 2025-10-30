@@ -11,7 +11,7 @@ memmap = "*"
 simple_logger = "*"
 adler32 = "*"
 bitflags = "2.6.0"
-clap = { version = "4.5.36", features = ["std","derive"], default-features = false }
+pico-args = "0.5.0"
 
 
 [profile.release]
@@ -19,5 +19,5 @@ debug = true
 # opt-level = 3
 # lto = true
 
-[profile.dev.package."*"]
-opt-level = 3
+# [profile.dev.package."*"]
+# opt-level = 3
