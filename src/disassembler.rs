@@ -224,7 +224,8 @@ declare_opcodes! {
     0x3a => IF_LTZ, "if-ltz", Format21t;
     0x3b => IF_GEZ, "if-gez", Format21t;
     0x3c => IF_GTZ, "if-gtz", Format21t;
-    0x3d => IF_LEZ, "if-lex", Format21t;
+    0x3d => IF_LEZ, "if-lez", Format21t;
+
     0x44 => AGET, "aget", Format23x;
     0x45 => AGET_WIDE, "aget-wide", Format23x;
     0x46 => AGET_OBJECT, "aget-object", Format23x;
@@ -272,11 +273,13 @@ declare_opcodes! {
     0x70 => INVOKE_DIRECT, "invoke-direct", Format35c;
     0x71 => INVOKE_STATIC, "invoke-static", Format35c;
     0x72 => INVOKE_INTERFACE, "invoke-interface", Format35c;
+    0x73 => RETURN_VOID_NO_BARRIER, "return-void-no-barrier", Format10x;
     0x74 => INVOKE_VIRTUAL_RANGE, "invoke-virtual/range", Format3rc;
     0x75 => INVOKE_SUPER_RANGE, "invoke-super/range", Format3rc;
     0x76 => INVOKE_DIRECT_RANGE, "invoke-direct/range", Format3rc;
     0x77 => INVOKE_STATIC_RANGE, "invoke-static/range", Format3rc;
     0x78 => INVOKE_INTERFACE_RANGE, "invoke-interface/range", Format3rc;
+
     0x7b => NEG_INT, "neg-int", Format12x;
     0x7c => NOT_INT, "not-int", Format12x;
     0x7d => NEG_LONG, "neg-long", Format12x;
@@ -381,6 +384,24 @@ declare_opcodes! {
     0xe0 => SHL_INT_LIT8, "shl-int/lit8", Format22b;
     0xe1 => SHR_INT_LIT8, "shr-int/lit8", Format22b;
     0xe2 => USHR_INT_LIT8, "ushr-int/lit8", Format22b;
+    // Some odex shit
+    0xe3 => IGET_QUICK, "iget-quick", Format22c;
+    0xe4 => IGET_WIDE_QUICK, "iget-wide-quick", Format22c;
+    0xe5 => IGET_OBJECT_QUICK, "iget-object-quick", Format22c;
+    0xe6 => IPUT_QUICK, "iput-quick", Format22c;
+    0xe7 => IPUT_WIDE_QUICK, "iput-wide-quick", Format22c;
+    0xe8 => IPUT_OBJECT_QUICK, "iput-object-quick", Format22c;
+    0xe9 => INVOKE_VIRTUAL_QUICK, "invoke-virtual-quick", Format35c;
+    0xea => INVOKE_VIRTUAL_QUICK_RANGE, "invoke-virtual-quick/range", Format3rc;
+    0xeb => INVOKE_IPUT_BOOLEAN_QUICK, "invoke-iput-boolean-quick", Format35c;
+    0xec => INVOKE_IPUT_BYTE_QUICK, "invoke-iput-byte-quick", Format22c;
+    0xed => INVOKE_IPUT_CHAR_QUICK, "invoke-iput-char-quick", Format22cs;
+    0xee => INVOKE_IPUT_SHORT_QUICK, "invoke-iput-short-quick", Format22c;
+    0xef => INVOKE_IGET_BOOLEAN_QUICK, "invoke-iget-boolean-quick", Format22c;
+    0xf0 => INVOKE_IGET_BYTE_QUICK, "invoke-iget-byte-quick", Format22c;
+    0xf1 => INVOKE_IGET_CHAR_QUICK, "invoke-iget-char-quick", Format22c;
+    0xf2 => INVOKE_IGET_SHORT_QUICK, "invoke-iget-short-quick", Format22c;
+
     0xfa => INVOKE_POLYMORPHIC, "invoke-polymorphic", Format45cc;
     0xfb => INVOKE_POLYMORPHIC_RANGE, "invoke-polymorphic/range", Format4rcc;
     0xfc => INVOKE_CUSTOM, "invoke-custom", Format35c;
@@ -389,27 +410,238 @@ declare_opcodes! {
     0xff => CONST_METHOD_TYPE, "const-method-type", Format21c;
 }
 
+/// Returns the size in 16-bit units for a given instruction format
+#[inline]
+fn format_size(format: InstructionFormat) -> usize {
+    match format {
+        InstructionFormat::Format10x | InstructionFormat::Format12x |
+        InstructionFormat::Format11n | InstructionFormat::Format11x |
+        InstructionFormat::Format10t => 1,
+        InstructionFormat::Format20t | InstructionFormat::Format20bc |
+        InstructionFormat::Format22x | InstructionFormat::Format21t |
+        InstructionFormat::Format21s | InstructionFormat::Format21h |
+        InstructionFormat::Format21c | InstructionFormat::Format23x |
+        InstructionFormat::Format22b | InstructionFormat::Format22t |
+        InstructionFormat::Format22s | InstructionFormat::Format22c |
+        InstructionFormat::Format22cs => 2,
+        InstructionFormat::Format30t | InstructionFormat::Format32x |
+        InstructionFormat::Format31i | InstructionFormat::Format31t |
+        InstructionFormat::Format31c | InstructionFormat::Format35c |
+        InstructionFormat::Format35ms | InstructionFormat::Format35mi |
+        InstructionFormat::Format3rc | InstructionFormat::Format3rms |
+        InstructionFormat::Format3rmi => 3,
+        InstructionFormat::Format45cc | InstructionFormat::Format4rcc => 4,
+        InstructionFormat::Format51l => 5,
+        _ => 1,
+    }
+}
+
 pub fn disassemble_method(
     code_item: &CodeItem,
     string_ids: &[u32],
     string_map: &HashMap<u32, String>,
     type_map: &HashMap<u32, String>,
+    class_name: Option<&str>,
+    method_name: Option<&str>,
 ) -> (Vec<String>, u64) {
     let mut disassembled_instructions = Vec::new();
     let insns = &code_item.insns;
     let mut pc: usize = 0;
     let mut instruction_count: u64 = 0;
 
+    // First pass: collect all payload locations
+    use std::collections::HashSet;
+    let mut payload_pcs: HashSet<usize> = HashSet::new();
+
+    let mut scan_pc = 0;
+    let mut payload_count = 0;
+    while scan_pc < insns.len() {
+        let opcode_byte = insns[scan_pc] as u8;
+        if let Some(opcode) = Opcode::from_byte(opcode_byte) {
+            match opcode {
+                Opcode::PACKED_SWITCH | Opcode::SPARSE_SWITCH | Opcode::FILL_ARRAY_DATA => {
+                    // These instructions have Format31t: 3 units with a 32-bit offset
+                    if scan_pc + 2 < insns.len() {
+                        let offset_low = insns[scan_pc + 1] as u32;
+                        let offset_high = insns[scan_pc + 2] as u32;
+                        let offset_raw = ((offset_high << 16) | offset_low) as i32;
+                        let payload_pc = ((scan_pc as i32) + offset_raw) as usize;
+
+                        if payload_pc < insns.len() {
+                            // Calculate payload size
+                            let payload_size = match opcode {
+                                Opcode::PACKED_SWITCH => {
+                                    if payload_pc + 1 < insns.len() && insns[payload_pc] == 0x0100 {
+                                        let size = insns[payload_pc + 1] as usize;
+                                        4 + size * 2
+                                    } else { 0 }
+                                }
+                                Opcode::SPARSE_SWITCH => {
+                                    if payload_pc + 1 < insns.len() && insns[payload_pc] == 0x0200 {
+                                        let size = insns[payload_pc + 1] as usize;
+                                        2 + size * 4
+                                    } else { 0 }
+                                }
+                                Opcode::FILL_ARRAY_DATA => {
+                                    if payload_pc + 3 < insns.len() && insns[payload_pc] == 0x0300 {
+                                        let element_width = insns[payload_pc + 1] as usize;
+                                        let size_low = insns[payload_pc + 2] as u32;
+                                        let size_high = insns[payload_pc + 3] as u32;
+                                        let size = ((size_high << 16) | size_low) as usize;
+                                        let data_size_bytes = size * element_width;
+                                        let data_size_units = (data_size_bytes + 1) / 2;
+                                        4 + data_size_units
+                                    } else { 0 }
+                                }
+                                _ => 0,
+                            };
+
+                            // Mark all PCs in the payload range
+                            for i in 0..payload_size {
+                                payload_pcs.insert(payload_pc + i);
+                            }
+                            payload_count += 1;
+                            if payload_count <= 3 {
+                                warn!("Found payload for {:?} at scan_pc={}, payload at PC {}, size {}",
+                                    opcode.name(), scan_pc, payload_pc, payload_size);
+                            }
+                        }
+                    }
+                    scan_pc += 3; // Format31t is 3 units
+                }
+                _ => {
+                    // Get instruction size from format
+                    let size = format_size(opcode.format());
+                    scan_pc += size;
+                }
+            }
+        } else {
+            // check for payload data? 
+            let ident = insns[scan_pc];
+            if ident == 0x0100 && scan_pc + 1 < insns.len() {
+                // Packed-switch payload
+                let size = insns[scan_pc + 1] as usize;
+                let payload_size = 4 + size * 2;
+                if scan_pc + payload_size <= insns.len() {
+                    scan_pc += payload_size;
+                    continue;
+                }
+            } else if ident == 0x0200 && scan_pc + 1 < insns.len() {
+                // Sparse-switch payload
+                let size = insns[scan_pc + 1] as usize;
+                let payload_size = 2 + size * 4;
+                if scan_pc + payload_size <= insns.len() {
+                    scan_pc += payload_size;
+                    continue;
+                }
+            } else if ident == 0x0300 && scan_pc + 3 < insns.len() {
+                // Fill-array-data payload
+                let element_width = insns[scan_pc + 1] as usize;
+                let size_low = insns[scan_pc + 2] as u32;
+                let size_high = insns[scan_pc + 3] as u32;
+                let size = ((size_high << 16) | size_low) as usize;
+                let data_size_bytes = size * element_width;
+                let data_size_units = (data_size_bytes + 1) / 2;
+                let payload_size = 4 + data_size_units;
+                if scan_pc + payload_size <= insns.len() {
+                    scan_pc += payload_size;
+                    continue;
+                }
+            }
+            scan_pc += 1; // Unknown opcode, move forward
+        }
+    }
+
     // All pc increments of 1 are of 16-bit(2 bytes) units not 8-bits(1 byte)
     while pc < insns.len() {
-        instruction_count += 1;
+        // Skip if this PC is part of a payload
+        if payload_pcs.contains(&pc) {
+            pc += 1;
+            continue;
+        }
+
         let address = pc * 2;
         let instruction_unit = insns[pc];
-        let opcode = Opcode::from_byte(instruction_unit as u8) // Low byte is the primary opcode
-            .expect("Unknown opcode found");
+
+        instruction_count += 1;
+        let opcode_byte = instruction_unit as u8;
+        let opcode = match Opcode::from_byte(opcode_byte) {
+            Some(op) => op,
+            None => {
+                eprintln!("\n==== UNKNOWN OPCODE ERROR ====");
+                if let Some(cls) = class_name {
+                    eprintln!("Class: {}", cls);
+                }
+                if let Some(mth) = method_name {
+                    eprintln!("Method: {}", mth);
+                }
+                eprintln!("Address: 0x{:04x} (PC: {} units)", address, pc);
+                eprintln!("Unknown opcode: 0x{:02x}", opcode_byte);
+
+                eprintln!("\nSurrounding instruction units (PC ± 20):");
+                let start = if pc >= 20 { pc - 20 } else { 0 };
+                let end = (pc + 20).min(insns.len());
+                for i in start..end {
+                    let marker = if i == pc { " <-- HERE" } else { "" };
+                    let low_byte = insns[i] as u8;
+                    let high_byte = (insns[i] >> 8) as u8;
+                    let maybe_opcode = Opcode::from_byte(low_byte);
+                    let opcode_str = match maybe_opcode {
+                        Some(op) => op.name(),
+                        None => "UNKNOWN",
+                    };
+                    eprintln!("  PC {:4}: 0x{:04x} (opcode {:02x}={:20}) {}", i, insns[i], low_byte, opcode_str, marker);
+                }
+
+                eprintln!("\nRaw bytes around address 0x{:04x}:", address);
+                let byte_start = if pc >= 10 { (pc - 10) * 2 } else { 0 };
+                let byte_end = ((pc + 10) * 2).min(insns.len() * 2);
+                eprint!("  ");
+                for i in byte_start..byte_end {
+                    if i == address {
+                        eprint!("[");
+                    }
+                    if i % 2 == 0 {
+                        eprint!("{:02x}", (insns[i / 2] & 0xFF) as u8);
+                    } else {
+                        eprint!("{:02x}", (insns[i / 2] >> 8) as u8);
+                    }
+                    if i == address + 1 {
+                        eprint!("]");
+                    }
+                    if (i + 1 - byte_start) % 16 == 0 {
+                        eprintln!();
+                        eprint!("  ");
+                    } else {
+                        eprint!(" ");
+                    }
+                }
+                eprintln!("\n==============================\n");
+
+                let error_msg = format!("0x{:04x}: *** ERROR: Unknown opcode 0x{:02x} - stopping disassembly here ***", address, opcode_byte);
+                disassembled_instructions.push(error_msg);
+
+                disassembled_instructions.push(format!("  Previous 5 instructions were:"));
+                let context_start = if disassembled_instructions.len() >= 7 { disassembled_instructions.len() - 7 } else { 0 };
+                for i in context_start..disassembled_instructions.len().saturating_sub(2) {
+                    disassembled_instructions.push(format!("    {}", disassembled_instructions[i]));
+                }
+
+                return (disassembled_instructions, instruction_count);
+            }
+        };
 
         let name = opcode.name();
         let format = opcode.format();
+
+        let format_size = format_size(format);
+
+        if pc + format_size > insns.len() {
+            let error_msg = format!("0x{:04x}: {} (Error: instruction truncated, needs {} units but only {} available)",
+                address, name, format_size, insns.len() - pc);
+            disassembled_instructions.push(error_msg);
+            break;
+        }
 
         let (disassembly, size_units) = match format {
             InstructionFormat::Format00x => (name.to_string(), 1),
@@ -420,13 +652,22 @@ pub fn disassemble_method(
                 (format!("{} v{}, v{}", name, v_a, v_b), 1)
             }
             InstructionFormat::Format11n => {
+                // B|A|op - B is signed 4-bit immediate, A is register
                 let v_a = (instruction_unit >> 8) & 0x0F;
-                let imm_b = (instruction_unit >> 12) & 0x0F;
-                (format!("{} v{}, #+{}", name, v_a, imm_b), 1)
+                // Sign-extend 4-bit value from bit 12
+                let imm_b_raw = (instruction_unit >> 12) & 0x0F;
+                let imm_b = if (imm_b_raw & 0x08) != 0 {
+                    // Negative: sign-extend from bit 3
+                    (imm_b_raw | 0xF0) as i8 as i32
+                } else {
+                    imm_b_raw as i32
+                };
+                let sign = if imm_b >= 0 { "+" } else { "" };
+                (format!("{} v{}, #{}{}", name, v_a, sign, imm_b), 1)
             }
             InstructionFormat::Format11x => {
-                let v_a = (instruction_unit >> 8) & 0x0F;
-                (format!("{} v{}", name, v_a), 1)
+                let v_aa = (instruction_unit >> 8) & 0xFF;
+                (format!("{} v{}", name, v_aa), 1)
             }
             InstructionFormat::Format10t => {
                 //op +AA (signed 8-bit offset)
@@ -452,19 +693,19 @@ pub fn disassemble_method(
             }
             InstructionFormat::Format20bc => {
                 // op vAA, kind@BBBB
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let k_bbbb = insns[pc + 1];
                 (format!("{} v{}, kind_{}", name, v_aa, k_bbbb), 2)
             }
             InstructionFormat::Format22x => {
                 // op vAA, vBBBB
-                let v_a = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bbbb = insns[pc + 1];
-                (format!("{} v{}, v{}", name, v_a, v_bbbb), 2)
+                (format!("{} v{}, v{}", name, v_aa, v_bbbb), 2)
             }
             InstructionFormat::Format21t => {
                 // op vAA, +BBBB (signed 16-bit offset)
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let offset_raw = insns[pc + 1] as i16 as i32;
                 let target_address = ((address as i32) + offset_raw * 2) as usize;
                 let target_address_str = if target_address < insns.len() * 2 {
@@ -476,19 +717,25 @@ pub fn disassemble_method(
             }
             InstructionFormat::Format21s => {
                 // op vAA, #+BBBB
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let imm = insns[pc + 1];
                 (format!("{} v{}, #+{}", name, v_aa, imm), 2)
             }
             InstructionFormat::Format21h => {
-                // op vAA, #+BBBB0000
-                // op vAA, #+BBBB000000000000
-                let v_aa = (instruction_unit >> 8) & 0x0F;
-                let imm = insns[pc + 1];
-                (format!("{} v{}, #+{}", name, v_aa, imm), 2)
+                // op vAA, #+BBBB0000 (for const/high16)
+                // op vAA, #+BBBB000000000000 (for const-wide/high16)
+                let v_aa = (instruction_unit >> 8) & 0xFF;
+                let bbbb = insns[pc + 1];
+                // Check opcode to determine shift amount
+                let imm_str = match opcode {
+                    Opcode::CONST_HIGH16 => format!("{}", (bbbb as i32) << 16),
+                    Opcode::CONST_WIDE_HIGH16 => format!("{}", (bbbb as i64) << 48),
+                    _ => format!("{}", bbbb), // Default case
+                };
+                (format!("{} v{}, #+{}", name, v_aa, imm_str), 2)
             }
             InstructionFormat::Format21c => {
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
 
                 (
@@ -499,17 +746,17 @@ pub fn disassemble_method(
             InstructionFormat::Format23x => {
                 // byte 1 AA|op
                 // byte 2 CC|BB
-                let v_aa = (instruction_unit >> 8) & 0x0F;
-                let v_bb = insns[pc + 1] >> 8;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
+                let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
                 (format!("{} v{}, v{}, v{}", name, v_aa, v_bb, v_cc), 2)
             }
             InstructionFormat::Format22b => {
                 // op vAA, vBB, #+CC
-                let v_a = (instruction_unit >> 8) & 0x0F;
-                let v_bb = insns[pc + 1] >> 8;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
+                let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                (format!("{} v{}, v{}, #+{}", name, v_a, v_bb, v_cc), 2)
+                (format!("{} v{}, v{}, #+{}", name, v_aa, v_bb, v_cc), 2)
             }
             InstructionFormat::Format22t => {
                 // op vA, vB, +CCCC (signed 16-bit offset)
@@ -568,7 +815,7 @@ pub fn disassemble_method(
                 (format!("{} v{}, v{}", name, v_aaaa, v_bbbb), 3)
             }
             InstructionFormat::Format31i => {
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bb_low = insns[pc + 1];
                 let bb_high = insns[pc + 2];
                 let bb = ((bb_high as u32) << 16) | (bb_low as u32);
@@ -576,7 +823,7 @@ pub fn disassemble_method(
             }
             InstructionFormat::Format31t => {
                 // op vAA, +BBBBBBBB (signed 32-bit offset)
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bb_low = insns[pc + 1] as u32;
                 let bb_high = insns[pc + 2] as u32;
                 let offset_raw = ((bb_high << 16) | bb_low) as i32;
@@ -590,7 +837,7 @@ pub fn disassemble_method(
                 (format!("{} v{}, {}", name, v_aa, target_address_str), 3)
             }
             InstructionFormat::Format31c => {
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb_low = insns[pc + 1];
                 let bbbb_high = insns[pc + 2];
                 let bbbb = ((bbbb_high as u32) << 16) | (bbbb_low as u32);
@@ -615,8 +862,8 @@ pub fn disassemble_method(
                 // [A=2] op {vC, vD}, kind@BBBB
                 // [A=1] op {vC}, kind@BBBB
                 // [A=0] op {}, kind@BBBB
-                let v_a = (instruction_unit >> 8) & 0x0F;
-                let v_g = (instruction_unit >> 12) & 0x0F;
+                let v_a = (instruction_unit >> 12) & 0x0F;
+                let v_g = (instruction_unit >> 8) & 0x0F;
                 let bbbb = insns[pc + 1];
                 let v_c = (insns[pc + 2] >> 0) & 0x0F;
                 let v_d = (insns[pc + 2] >> 4) & 0x0F;
@@ -657,8 +904,8 @@ pub fn disassemble_method(
                 // [A=3] op {vC, vD, vE}, vtaboff@BBBB
                 // [A=2] op {vC, vD}, vtaboff@BBBB
                 // [A=1] op {vC}, vtaboff@BBBB
-                let v_a = (instruction_unit >> 8) & 0x0F;
-                let v_g = (instruction_unit >> 12) & 0x0F;
+                let v_a = (instruction_unit >> 12) & 0x0F;
+                let v_g = (instruction_unit >> 8) & 0x0F;
                 let bbbb = insns[pc + 1];
                 let v_c = (insns[pc + 2] >> 0) & 0x0F;
                 let v_d = (insns[pc + 2] >> 4) & 0x0F;
@@ -704,8 +951,8 @@ pub fn disassemble_method(
                 // [A=3] op {vC, vD, vE}, inline@BBBB
                 // [A=2] op {vC, vD}, inline@BBBB
                 // [A=1] op {vC}, inline@BBBB
-                let v_a = (instruction_unit >> 8) & 0x0F;
-                let v_g = (instruction_unit >> 12) & 0x0F;
+                let v_a = (instruction_unit >> 12) & 0x0F;
+                let v_g = (instruction_unit >> 8) & 0x0F;
                 let bbbb = insns[pc + 1];
                 let v_c = (insns[pc + 2] >> 0) & 0x0F;
                 let v_d = (insns[pc + 2] >> 4) & 0x0F;
@@ -744,69 +991,67 @@ pub fn disassemble_method(
             }
             // TODO(sfx): check for off by ones.
             InstructionFormat::Format3rc => {
-                // AA|op BBBB CCCC....NNNN
-                // Here v_a determines the number of arguments passed
-                // for this instruction.
-                let v_a = (instruction_unit >> 8) & 0x0F;
+                // AA|op BBBB CCCC
+                // Format is always 3 units total
+                // AA = register count, BBBB = method ref, CCCC = first register
+                // Registers are a RANGE: vCCCC through v(CCCC+AA-1)
+                let v_a = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
-                // each register is as usual identified by a
-                // full 16bit value, so we need to read v_a
-                // number of u16 values from insns[pc + 2] onwards
-                // the register ids start from cccc to cccc + v_a -1
+
+                // Build register range string
                 let mut registers = Vec::with_capacity(v_a as usize);
-                for i in 1..v_a {
-                    // let _reg_id = insns[pc + 1 + (i as usize)];
+                for i in 0..v_a {
                     registers.push(format!("v{}", cccc + i));
                 }
 
                 let registers_str = registers.join(", ");
                 (
                     format!("{} {{{}}}, <meth,site,type>@{}", name, registers_str, bbbb),
-                    3 + (v_a as usize),
+                    3,
                 )
             }
             InstructionFormat::Format3rms => {
-                let v_a = (instruction_unit >> 8) & 0x0F;
+                // AA|op BBBB CCCC
+                let v_a = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
-                // each register is as usual identified by a
-                // full 16bit value, so we need to read v_a
-                // number of u16 values from insns[pc + 2] onwards
-                // the register ids start from cccc to cccc + v_a -1
+
+                // Build register range string
                 let mut registers = Vec::with_capacity(v_a as usize);
-                for i in 1..v_a {
-                    let reg_id = insns[pc + 2 + (i as usize)];
+                for i in 0..v_a {
                     registers.push(format!("v{}", cccc + i));
                 }
 
                 let registers_str = registers.join(", ");
                 (
                     format!("{} {{{}}}, vtaboff@{}", name, registers_str, bbbb),
-                    3 + (v_a as usize - 1),
+                    3, 
                 )
             }
             InstructionFormat::Format3rmi => {
-                let v_a = (instruction_unit >> 8) & 0x0F;
+                // AA|op BBBB CCCC - same as Format3rc, always 3 units
+                let v_a = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
+
+                // Build register range string
                 let mut registers = Vec::with_capacity(v_a as usize);
-                for i in 1..v_a {
-                    let reg_id = insns[pc + 2 + (i as usize)];
+                for i in 0..v_a {
                     registers.push(format!("v{}", cccc + i));
                 }
 
                 let registers_str = registers.join(", ");
                 (
                     format!("{} {{{}}}, inline@{}", name, registers_str, bbbb),
-                    3 + (v_a as usize - 1),
+                    3,
                 )
             }
             InstructionFormat::Format45cc => (format!("{}", name,), 4),
             InstructionFormat::Format4rcc => (format!("{}", name,), 4),
             InstructionFormat::Format51l => {
                 // AA|op BBBBlo BBBB BBBB BBBBhi 5 bytes
-                let v_aa = (instruction_unit >> 8) & 0x0F;
+                let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb_lo1 = insns[pc + 1];
                 let bbbb_lo2 = insns[pc + 2];
                 let bbbb_hi1 = insns[pc + 3];

@@ -458,6 +458,8 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
                             &dex.type_map,
+                            Some(&class_name),
+                            Some(&method_full_name),
                         );
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
@@ -553,6 +555,8 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
                             &dex.type_map,
+                            Some(&class_name),
+                            Some(&method_full_name),
                         );
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
