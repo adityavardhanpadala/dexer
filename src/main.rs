@@ -428,15 +428,17 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                         })?;
 
                 // Get method name from string_ids
-                let method_name_offset = dex.string_ids
+                let method_name_offset = dex
+                    .string_ids
                     .get(method_id.name_idx as usize)
                     .copied()
                     .unwrap_or(0);
-                let method_name = dex.string_map
+                let method_name = dex
+                    .string_map
                     .get(&method_name_offset)
                     .cloned()
                     .unwrap_or_else(|| "<unknown>".to_string());
-                
+
                 // Combine method name with signature: methodName(Signature)
                 let method_full_name = format!("{}{}", method_name, method_sig);
 
@@ -453,7 +455,8 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
                             parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let (disassembled, instruction_count) = disassemble_method(
+                        let instruction_count = disassemble_method(
+                            &mut writer,
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
@@ -465,10 +468,6 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
                         metrics.add_method(instruction_count, instruction_bytes as u64);
-
-                        for line in disassembled {
-                            writeln!(writer, "  {}", line)?;
-                        }
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
@@ -525,15 +524,17 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                         })?;
 
                 // Get method name from string_ids
-                let method_name_offset = dex.string_ids
+                let method_name_offset = dex
+                    .string_ids
                     .get(method_id.name_idx as usize)
                     .copied()
                     .unwrap_or(0);
-                let method_name = dex.string_map
+                let method_name = dex
+                    .string_map
                     .get(&method_name_offset)
                     .cloned()
                     .unwrap_or_else(|| "<unknown>".to_string());
-                
+
                 // Combine method name with signature: methodName(Signature)
                 let method_full_name = format!("{}{}", method_name, method_sig);
 
@@ -550,7 +551,8 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
                             parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let (disassembled, instruction_count) = disassemble_method(
+                        let instruction_count = disassemble_method(
+                            &mut writer,
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
@@ -562,10 +564,6 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
                         metrics.add_method(instruction_count, instruction_bytes as u64);
-
-                        for line in disassembled {
-                            writeln!(writer, "  {}", line)?;
-                        }
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",

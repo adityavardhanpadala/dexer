@@ -16,8 +16,8 @@ pico-args = "0.5.0"
 
 [profile.release]
 debug = true
-# opt-level = 3
-# lto = true
+opt-level = 3
+lto = true
 
 # [profile.dev.package."*"]
 # opt-level = 3

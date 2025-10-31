@@ -1,6 +1,6 @@
 use crate::types::CodeItem;
-use log::warn;
-use std::collections::HashMap;
+use log::{debug, warn};
+use std::{collections::HashMap, fs::File, io::BufWriter, io::Write};
 
 /// Dex Instructions are not fixed size so like x86/amd64 we each instruction has a decode format associated with it.
 // --- Instruction Formats ---
@@ -135,6 +135,7 @@ macro_rules! declare_opcodes {
                         $value => Some(Opcode::$name),
                     )*
                     _ => {
+                        #[cfg(debug_assertions)]
                         warn!("Unknown Opcode byte: 0x{:02x}", byte);
                         None
                     },
@@ -414,22 +415,35 @@ declare_opcodes! {
 #[inline]
 fn format_size(format: InstructionFormat) -> usize {
     match format {
-        InstructionFormat::Format10x | InstructionFormat::Format12x |
-        InstructionFormat::Format11n | InstructionFormat::Format11x |
-        InstructionFormat::Format10t => 1,
-        InstructionFormat::Format20t | InstructionFormat::Format20bc |
-        InstructionFormat::Format22x | InstructionFormat::Format21t |
-        InstructionFormat::Format21s | InstructionFormat::Format21h |
-        InstructionFormat::Format21c | InstructionFormat::Format23x |
-        InstructionFormat::Format22b | InstructionFormat::Format22t |
-        InstructionFormat::Format22s | InstructionFormat::Format22c |
-        InstructionFormat::Format22cs => 2,
-        InstructionFormat::Format30t | InstructionFormat::Format32x |
-        InstructionFormat::Format31i | InstructionFormat::Format31t |
-        InstructionFormat::Format31c | InstructionFormat::Format35c |
-        InstructionFormat::Format35ms | InstructionFormat::Format35mi |
-        InstructionFormat::Format3rc | InstructionFormat::Format3rms |
-        InstructionFormat::Format3rmi => 3,
+        InstructionFormat::Format10x
+        | InstructionFormat::Format12x
+        | InstructionFormat::Format11n
+        | InstructionFormat::Format11x
+        | InstructionFormat::Format10t => 1,
+        InstructionFormat::Format20t
+        | InstructionFormat::Format20bc
+        | InstructionFormat::Format22x
+        | InstructionFormat::Format21t
+        | InstructionFormat::Format21s
+        | InstructionFormat::Format21h
+        | InstructionFormat::Format21c
+        | InstructionFormat::Format23x
+        | InstructionFormat::Format22b
+        | InstructionFormat::Format22t
+        | InstructionFormat::Format22s
+        | InstructionFormat::Format22c
+        | InstructionFormat::Format22cs => 2,
+        InstructionFormat::Format30t
+        | InstructionFormat::Format32x
+        | InstructionFormat::Format31i
+        | InstructionFormat::Format31t
+        | InstructionFormat::Format31c
+        | InstructionFormat::Format35c
+        | InstructionFormat::Format35ms
+        | InstructionFormat::Format35mi
+        | InstructionFormat::Format3rc
+        | InstructionFormat::Format3rms
+        | InstructionFormat::Format3rmi => 3,
         InstructionFormat::Format45cc | InstructionFormat::Format4rcc => 4,
         InstructionFormat::Format51l => 5,
         _ => 1,
@@ -437,14 +451,14 @@ fn format_size(format: InstructionFormat) -> usize {
 }
 
 pub fn disassemble_method(
+    writer: &mut BufWriter<File>,
     code_item: &CodeItem,
     string_ids: &[u32],
     string_map: &HashMap<u32, String>,
     type_map: &HashMap<u32, String>,
     class_name: Option<&str>,
     method_name: Option<&str>,
-) -> (Vec<String>, u64) {
-    let mut disassembled_instructions = Vec::new();
+) -> u64 {
     let insns = &code_item.insns;
     let mut pc: usize = 0;
     let mut instruction_count: u64 = 0;
@@ -474,13 +488,17 @@ pub fn disassemble_method(
                                     if payload_pc + 1 < insns.len() && insns[payload_pc] == 0x0100 {
                                         let size = insns[payload_pc + 1] as usize;
                                         4 + size * 2
-                                    } else { 0 }
+                                    } else {
+                                        0
+                                    }
                                 }
                                 Opcode::SPARSE_SWITCH => {
                                     if payload_pc + 1 < insns.len() && insns[payload_pc] == 0x0200 {
                                         let size = insns[payload_pc + 1] as usize;
                                         2 + size * 4
-                                    } else { 0 }
+                                    } else {
+                                        0
+                                    }
                                 }
                                 Opcode::FILL_ARRAY_DATA => {
                                     if payload_pc + 3 < insns.len() && insns[payload_pc] == 0x0300 {
@@ -491,7 +509,9 @@ pub fn disassemble_method(
                                         let data_size_bytes = size * element_width;
                                         let data_size_units = (data_size_bytes + 1) / 2;
                                         4 + data_size_units
-                                    } else { 0 }
+                                    } else {
+                                        0
+                                    }
                                 }
                                 _ => 0,
                             };
@@ -502,8 +522,13 @@ pub fn disassemble_method(
                             }
                             payload_count += 1;
                             if payload_count <= 3 {
-                                warn!("Found payload for {:?} at scan_pc={}, payload at PC {}, size {}",
-                                    opcode.name(), scan_pc, payload_pc, payload_size);
+                                debug!(
+                                    "Found payload for {:?} at scan_pc={}, payload at PC {}, size {}",
+                                    opcode.name(),
+                                    scan_pc,
+                                    payload_pc,
+                                    payload_size
+                                );
                             }
                         }
                     }
@@ -516,7 +541,7 @@ pub fn disassemble_method(
                 }
             }
         } else {
-            // check for payload data? 
+            // check for payload data?
             let ident = insns[scan_pc];
             if ident == 0x0100 && scan_pc + 1 < insns.len() {
                 // Packed-switch payload
@@ -590,7 +615,10 @@ pub fn disassemble_method(
                         Some(op) => op.name(),
                         None => "UNKNOWN",
                     };
-                    eprintln!("  PC {:4}: 0x{:04x} (opcode {:02x}={:20}) {}", i, insns[i], low_byte, opcode_str, marker);
+                    eprintln!(
+                        "  PC {:4}: 0x{:04x} (opcode {:02x}={:20}) {}",
+                        i, insns[i], low_byte, opcode_str, marker
+                    );
                 }
 
                 eprintln!("\nRaw bytes around address 0x{:04x}:", address);
@@ -618,16 +646,17 @@ pub fn disassemble_method(
                 }
                 eprintln!("\n==============================\n");
 
-                let error_msg = format!("0x{:04x}: *** ERROR: Unknown opcode 0x{:02x} - stopping disassembly here ***", address, opcode_byte);
-                disassembled_instructions.push(error_msg);
+                writeln!(
+                    writer,
+                    "0x{:04x}: *** ERROR: Unknown opcode 0x{:02x} - stopping disassembly here ***",
+                    address, opcode_byte
+                );
 
-                disassembled_instructions.push(format!("  Previous 5 instructions were:"));
-                let context_start = if disassembled_instructions.len() >= 7 { disassembled_instructions.len() - 7 } else { 0 };
-                for i in context_start..disassembled_instructions.len().saturating_sub(2) {
-                    disassembled_instructions.push(format!("    {}", disassembled_instructions[i]));
-                }
+                writeln!(writer, "  Previous 5 instructions were:");
+                // Note: We can't easily show previous instructions since we're writing directly
+                // This would require buffering or a different approach if needed
 
-                return (disassembled_instructions, instruction_count);
+                return instruction_count;
             }
         };
 
@@ -637,19 +666,31 @@ pub fn disassemble_method(
         let format_size = format_size(format);
 
         if pc + format_size > insns.len() {
-            let error_msg = format!("0x{:04x}: {} (Error: instruction truncated, needs {} units but only {} available)",
-                address, name, format_size, insns.len() - pc);
-            disassembled_instructions.push(error_msg);
+            writeln!(
+                writer,
+                "0x{:04x}: {} (Error: instruction truncated, needs {} units but only {} available)",
+                address,
+                name,
+                format_size,
+                insns.len() - pc
+            );
             break;
         }
 
-        let (disassembly, size_units) = match format {
-            InstructionFormat::Format00x => (name.to_string(), 1),
-            InstructionFormat::Format10x => (name.to_string(), 1),
+        let size_units = match format {
+            InstructionFormat::Format00x => {
+                writeln!(writer, "0x{:04x}: {}", address, name);
+                1
+            }
+            InstructionFormat::Format10x => {
+                writeln!(writer, "0x{:04x}: {}", address, name);
+                1
+            }
             InstructionFormat::Format12x => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
-                (format!("{} v{}, v{}", name, v_a, v_b), 1)
+                writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_a, v_b);
+                1
             }
             InstructionFormat::Format11n => {
                 // B|A|op - B is signed 4-bit immediate, A is register
@@ -663,11 +704,17 @@ pub fn disassemble_method(
                     imm_b_raw as i32
                 };
                 let sign = if imm_b >= 0 { "+" } else { "" };
-                (format!("{} v{}, #{}{}", name, v_a, sign, imm_b), 1)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, #{}{}",
+                    address, name, v_a, sign, imm_b
+                );
+                1
             }
             InstructionFormat::Format11x => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
-                (format!("{} v{}", name, v_aa), 1)
+                writeln!(writer, "0x{:04x}: {} v{}", address, name, v_aa);
+                1
             }
             InstructionFormat::Format10t => {
                 //op +AA (signed 8-bit offset)
@@ -678,7 +725,8 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                (format!("{} {}", name, target_address_str), 1)
+                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                1
             }
             InstructionFormat::Format20t => {
                 // op +AAAA (signed 16-bit offset)
@@ -689,19 +737,26 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                (format!("{} {}", name, target_address_str), 2)
+                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                2
             }
             InstructionFormat::Format20bc => {
                 // op vAA, kind@BBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let k_bbbb = insns[pc + 1];
-                (format!("{} v{}, kind_{}", name, v_aa, k_bbbb), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, kind_{}",
+                    address, name, v_aa, k_bbbb
+                );
+                2
             }
             InstructionFormat::Format22x => {
                 // op vAA, vBBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bbbb = insns[pc + 1];
-                (format!("{} v{}, v{}", name, v_aa, v_bbbb), 2)
+                writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_aa, v_bbbb);
+                2
             }
             InstructionFormat::Format21t => {
                 // op vAA, +BBBB (signed 16-bit offset)
@@ -713,13 +768,19 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                (format!("{} v{}, {}", name, v_aa, target_address_str), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, {}",
+                    address, name, v_aa, target_address_str
+                );
+                2
             }
             InstructionFormat::Format21s => {
                 // op vAA, #+BBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let imm = insns[pc + 1];
-                (format!("{} v{}, #+{}", name, v_aa, imm), 2)
+                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, imm);
+                2
             }
             InstructionFormat::Format21h => {
                 // op vAA, #+BBBB0000 (for const/high16)
@@ -732,16 +793,23 @@ pub fn disassemble_method(
                     Opcode::CONST_WIDE_HIGH16 => format!("{}", (bbbb as i64) << 48),
                     _ => format!("{}", bbbb), // Default case
                 };
-                (format!("{} v{}, #+{}", name, v_aa, imm_str), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, #+{}",
+                    address, name, v_aa, imm_str
+                );
+                2
             }
             InstructionFormat::Format21c => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
 
-                (
-                    format!("{} v{}, <type,field,met,proto,string>@{}", name, v_aa, bbbb),
-                    2,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, <type,field,met,proto,string>@{}",
+                    address, name, v_aa, bbbb
+                );
+                2
             }
             InstructionFormat::Format23x => {
                 // byte 1 AA|op
@@ -749,14 +817,24 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                (format!("{} v{}, v{}, v{}", name, v_aa, v_bb, v_cc), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, v{}",
+                    address, name, v_aa, v_bb, v_cc
+                );
+                2
             }
             InstructionFormat::Format22b => {
                 // op vAA, vBB, #+CC
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                (format!("{} v{}, v{}, #+{}", name, v_aa, v_bb, v_cc), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, #+{}",
+                    address, name, v_aa, v_bb, v_cc
+                );
+                2
             }
             InstructionFormat::Format22t => {
                 // op vA, vB, +CCCC (signed 16-bit offset)
@@ -770,31 +848,45 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                (
-                    format!("{} v{}, v{}, {}", name, v_a, v_b, target_address_str),
-                    2,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, {}",
+                    address, name, v_a, v_b, target_address_str
+                );
+                2
             }
             InstructionFormat::Format22s => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let imm_cccc = insns[pc + 1];
-                (format!("{} v{}, v{}, #+{}", name, v_a, v_b, imm_cccc), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, #+{}",
+                    address, name, v_a, v_b, imm_cccc
+                );
+                2
             }
             InstructionFormat::Format22c => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                (
-                    format!("{} v{}, v{}, <type,field>@{}", name, v_a, v_b, cccc),
-                    2,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, <type,field>@{}",
+                    address, name, v_a, v_b, cccc
+                );
+                2
             }
             InstructionFormat::Format22cs => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                (format!("{} v{}, v{}, fieldoff_{}", name, v_a, v_b, cccc), 2)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}, fieldoff_{}",
+                    address, name, v_a, v_b, cccc
+                );
+                2
             }
             InstructionFormat::Format30t => {
                 // `ØØ|op AAAA_{lo} AAAA_{hi}` (signed 32-bit offset)
@@ -807,19 +899,26 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                (format!("{} {}", name, target_address_str), 3)
+                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                3
             }
             InstructionFormat::Format32x => {
                 let v_aaaa = insns[pc + 1];
                 let v_bbbb = insns[pc + 2];
-                (format!("{} v{}, v{}", name, v_aaaa, v_bbbb), 3)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, v{}",
+                    address, name, v_aaaa, v_bbbb
+                );
+                3
             }
             InstructionFormat::Format31i => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bb_low = insns[pc + 1];
                 let bb_high = insns[pc + 2];
                 let bb = ((bb_high as u32) << 16) | (bb_low as u32);
-                (format!("{} v{}, #+{}", name, v_aa, bb), 3)
+                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bb);
+                3
             }
             InstructionFormat::Format31t => {
                 // op vAA, +BBBBBBBB (signed 32-bit offset)
@@ -834,7 +933,12 @@ pub fn disassemble_method(
                     "invalid".to_string()
                 };
 
-                (format!("{} v{}, {}", name, v_aa, target_address_str), 3)
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, {}",
+                    address, name, v_aa, target_address_str
+                );
+                3
             }
             InstructionFormat::Format31c => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
@@ -847,10 +951,12 @@ pub fn disassemble_method(
                     .cloned()
                     .unwrap_or_else(|| "<invalid_string>".to_string());
 
-                (
-                    format!("{} v{}, \"{}\"string@{}", name, v_aa, string_repr, bbbb),
-                    3,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} v{}, \"{}\"string@{}",
+                    address, name, v_aa, string_repr, bbbb
+                );
+                3
             }
             InstructionFormat::Format35c => {
                 // A|G|op BBBB F|E|D|C
@@ -871,31 +977,58 @@ pub fn disassemble_method(
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
                 match v_a {
-                    5 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}, v{}}}, <meth,site,type>@{}",
-                            name, v_c, v_d, v_e, v_f, v_g, bbbb
-                        ),
-                        3,
-                    ),
-                    4 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}}}, kind_{}",
-                            name, v_c, v_d, v_e, v_f, bbbb
-                        ),
-                        3,
-                    ),
-                    3 => (
-                        format!("{} {{v{}, v{}, v{}}}, kind_{}", name, v_c, v_d, v_e, bbbb),
-                        3,
-                    ),
-                    2 => (format!("{} {{v{}, v{}}}, kind_{}", name, v_c, v_d, bbbb), 3),
-                    1 => (format!("{} {{v{}}}, kind_{}", name, v_c, bbbb), 3),
-                    0 => (format!("{} {{}}, kind_{}", name, bbbb), 3),
-                    _ => (
-                        format!("{} (Error: invalid register count {})", name, v_a),
-                        3,
-                    ),
+                    5 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, <meth,site,type>@{}",
+                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        );
+                        3
+                    }
+                    4 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, kind_{}",
+                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        );
+                        3
+                    }
+                    3 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}}}, kind_{}",
+                            address, name, v_c, v_d, v_e, bbbb
+                        );
+                        3
+                    }
+                    2 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}}}, kind_{}",
+                            address, name, v_c, v_d, bbbb
+                        );
+                        3
+                    }
+                    1 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}}}, kind_{}",
+                            address, name, v_c, bbbb
+                        );
+                        3
+                    }
+                    0 => {
+                        writeln!(writer, "0x{:04x}: {} {{}}, kind_{}", address, name, bbbb);
+                        3
+                    }
+                    _ => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} (Error: invalid register count {})",
+                            address, name, v_a
+                        );
+                        3
+                    }
                 }
             }
             InstructionFormat::Format35ms => {
@@ -913,36 +1046,54 @@ pub fn disassemble_method(
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
                 match v_a {
-                    5 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}, v{}}}, vtaboff_{}",
-                            name, v_c, v_d, v_e, v_f, v_g, bbbb
-                        ),
-                        3,
-                    ),
-                    4 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}}}, vtaboff_{}",
-                            name, v_c, v_d, v_e, v_f, bbbb
-                        ),
-                        3,
-                    ),
-                    3 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}}}, vtaboff_{}",
-                            name, v_c, v_d, v_e, bbbb
-                        ),
-                        3,
-                    ),
-                    2 => (
-                        format!("{} {{v{}, v{}}}, vtaboff_{}", name, v_c, v_d, bbbb),
-                        3,
-                    ),
-                    1 => (format!("{} {{v{}}}, vtaboff_{}", name, v_c, bbbb), 3),
-                    _ => (
-                        format!("{} (Error: invalid register count {})", name, v_a),
-                        3,
-                    ),
+                    5 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, vtaboff_{}",
+                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        );
+                        3
+                    }
+                    4 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, vtaboff_{}",
+                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        );
+                        3
+                    }
+                    3 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}}}, vtaboff_{}",
+                            address, name, v_c, v_d, v_e, bbbb
+                        );
+                        3
+                    }
+                    2 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}}}, vtaboff_{}",
+                            address, name, v_c, v_d, bbbb
+                        );
+                        3
+                    }
+                    1 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}}}, vtaboff_{}",
+                            address, name, v_c, bbbb
+                        );
+                        3
+                    }
+                    _ => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} (Error: invalid register count {})",
+                            address, name, v_a
+                        );
+                        3
+                    }
                 }
             }
             InstructionFormat::Format35mi => {
@@ -960,33 +1111,54 @@ pub fn disassemble_method(
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
                 match v_a {
-                    5 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}, v{}}}, inline_{}",
-                            name, v_c, v_d, v_e, v_f, v_g, bbbb
-                        ),
-                        3,
-                    ),
-                    4 => (
-                        format!(
-                            "{} {{v{}, v{}, v{}, v{}}}, inline_{}",
-                            name, v_c, v_d, v_e, v_f, bbbb
-                        ),
-                        3,
-                    ),
-                    3 => (
-                        format!("{} {{v{}, v{}, v{}}}, inline_{}", name, v_c, v_d, v_e, bbbb),
-                        3,
-                    ),
-                    2 => (
-                        format!("{} {{v{}, v{}}}, inline_{}", name, v_c, v_d, bbbb),
-                        3,
-                    ),
-                    1 => (format!("{} {{v{}}}, inline_{}", name, v_c, bbbb), 3),
-                    _ => (
-                        format!("{} (Error: invalid register count {})", name, v_a),
-                        3,
-                    ),
+                    5 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, inline_{}",
+                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        );
+                        3
+                    }
+                    4 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, inline_{}",
+                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        );
+                        3
+                    }
+                    3 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}, v{}}}, inline_{}",
+                            address, name, v_c, v_d, v_e, bbbb
+                        );
+                        3
+                    }
+                    2 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}, v{}}}, inline_{}",
+                            address, name, v_c, v_d, bbbb
+                        );
+                        3
+                    }
+                    1 => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} {{v{}}}, inline_{}",
+                            address, name, v_c, bbbb
+                        );
+                        3
+                    }
+                    _ => {
+                        writeln!(
+                            writer,
+                            "0x{:04x}: {} (Error: invalid register count {})",
+                            address, name, v_a
+                        );
+                        3
+                    }
                 }
             }
             // TODO(sfx): check for off by ones.
@@ -1006,10 +1178,12 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                (
-                    format!("{} {{{}}}, <meth,site,type>@{}", name, registers_str, bbbb),
-                    3,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} {{{}}}, <meth,site,type>@{}",
+                    address, name, registers_str, bbbb
+                );
+                3
             }
             InstructionFormat::Format3rms => {
                 // AA|op BBBB CCCC
@@ -1024,10 +1198,12 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                (
-                    format!("{} {{{}}}, vtaboff@{}", name, registers_str, bbbb),
-                    3, 
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} {{{}}}, vtaboff@{}",
+                    address, name, registers_str, bbbb
+                );
+                3
             }
             InstructionFormat::Format3rmi => {
                 // AA|op BBBB CCCC - same as Format3rc, always 3 units
@@ -1042,13 +1218,21 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                (
-                    format!("{} {{{}}}, inline@{}", name, registers_str, bbbb),
-                    3,
-                )
+                writeln!(
+                    writer,
+                    "0x{:04x}: {} {{{}}}, inline@{}",
+                    address, name, registers_str, bbbb
+                );
+                3
             }
-            InstructionFormat::Format45cc => (format!("{}", name,), 4),
-            InstructionFormat::Format4rcc => (format!("{}", name,), 4),
+            InstructionFormat::Format45cc => {
+                writeln!(writer, "0x{:04x}: {}", address, name);
+                4
+            }
+            InstructionFormat::Format4rcc => {
+                writeln!(writer, "0x{:04x}: {}", address, name);
+                4
+            }
             InstructionFormat::Format51l => {
                 // AA|op BBBBlo BBBB BBBB BBBBhi 5 bytes
                 let v_aa = (instruction_unit >> 8) & 0xFF;
@@ -1060,23 +1244,21 @@ pub fn disassemble_method(
                     | ((bbbb_hi1 as u64) << 32)
                     | ((bbbb_lo2 as u64) << 16)
                     | (bbbb_lo1 as u64);
-                (format!("{} v{}, #+{}", name, v_aa, bbbb), 5)
+                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bbbb);
+                5
             }
         };
 
         if pc + size_units > insns.len() {
-            let formatted_line = format!(
+            writeln!(
+                writer,
                 "0x{:04x}: {} (Error: instruction truncated)",
-                address, disassembly
+                address, "instruction"
             );
-            disassembled_instructions.push(formatted_line);
             break; // Stop processing if we hit truncated data
         }
 
-        let formatted_line = format!("0x{:04x}: {}", address, disassembly);
-        disassembled_instructions.push(formatted_line);
-
         pc += size_units;
     }
-    (disassembled_instructions, instruction_count)
+    instruction_count
 }
