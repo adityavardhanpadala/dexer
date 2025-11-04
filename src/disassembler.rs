@@ -128,18 +128,25 @@ macro_rules! declare_opcodes {
             )*
         }
 
+        const OPCODE_TABLE: [Option<Opcode>; 256] = {
+            let mut table = [None; 256];
+            $(
+                table[$value] = Some(Opcode::$name);
+            )*
+            table
+        };
+
         impl Opcode {
+            #[inline]
             pub fn from_byte(byte: u8) -> Option<Opcode> {
-                match byte {
-                    $(
-                        $value => Some(Opcode::$name),
-                    )*
-                    _ => {
-                        #[cfg(debug_assertions)]
-                        warn!("Unknown Opcode byte: 0x{:02x}", byte);
-                        None
-                    },
-                }
+               let res = OPCODE_TABLE[byte as usize];
+               #[cfg(debug_assertions)]
+               {
+                   if res.is_none() {
+                       warn!("Unknown opcode byte: 0x{:02x}", byte);
+                   }
+               }
+                res
             }
 
             pub fn name(&self) -> &'static str {
@@ -646,15 +653,11 @@ pub fn disassemble_method(
                 }
                 eprintln!("\n==============================\n");
 
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: *** ERROR: Unknown opcode 0x{:02x} - stopping disassembly here ***",
                     address, opcode_byte
                 );
-
-                writeln!(writer, "  Previous 5 instructions were:");
-                // Note: We can't easily show previous instructions since we're writing directly
-                // This would require buffering or a different approach if needed
 
                 return instruction_count;
             }
@@ -666,7 +669,7 @@ pub fn disassemble_method(
         let format_size = format_size(format);
 
         if pc + format_size > insns.len() {
-            writeln!(
+            let _ = writeln!(
                 writer,
                 "0x{:04x}: {} (Error: instruction truncated, needs {} units but only {} available)",
                 address,
@@ -679,17 +682,17 @@ pub fn disassemble_method(
 
         let size_units = match format {
             InstructionFormat::Format00x => {
-                writeln!(writer, "0x{:04x}: {}", address, name);
+                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
                 1
             }
             InstructionFormat::Format10x => {
-                writeln!(writer, "0x{:04x}: {}", address, name);
+                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
                 1
             }
             InstructionFormat::Format12x => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
-                writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_a, v_b);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_a, v_b);
                 1
             }
             InstructionFormat::Format11n => {
@@ -704,7 +707,7 @@ pub fn disassemble_method(
                     imm_b_raw as i32
                 };
                 let sign = if imm_b >= 0 { "+" } else { "" };
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, #{}{}",
                     address, name, v_a, sign, imm_b
@@ -713,7 +716,7 @@ pub fn disassemble_method(
             }
             InstructionFormat::Format11x => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
-                writeln!(writer, "0x{:04x}: {} v{}", address, name, v_aa);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}", address, name, v_aa);
                 1
             }
             InstructionFormat::Format10t => {
@@ -725,7 +728,7 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
                 1
             }
             InstructionFormat::Format20t => {
@@ -737,14 +740,14 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
                 2
             }
             InstructionFormat::Format20bc => {
                 // op vAA, kind@BBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let k_bbbb = insns[pc + 1];
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, kind_{}",
                     address, name, v_aa, k_bbbb
@@ -755,7 +758,7 @@ pub fn disassemble_method(
                 // op vAA, vBBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bbbb = insns[pc + 1];
-                writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_aa, v_bbbb);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_aa, v_bbbb);
                 2
             }
             InstructionFormat::Format21t => {
@@ -768,7 +771,7 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, {}",
                     address, name, v_aa, target_address_str
@@ -779,7 +782,7 @@ pub fn disassemble_method(
                 // op vAA, #+BBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let imm = insns[pc + 1];
-                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, imm);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, imm);
                 2
             }
             InstructionFormat::Format21h => {
@@ -793,7 +796,7 @@ pub fn disassemble_method(
                     Opcode::CONST_WIDE_HIGH16 => format!("{}", (bbbb as i64) << 48),
                     _ => format!("{}", bbbb), // Default case
                 };
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, #+{}",
                     address, name, v_aa, imm_str
@@ -804,7 +807,7 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
 
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, <type,field,met,proto,string>@{}",
                     address, name, v_aa, bbbb
@@ -817,7 +820,7 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, v{}",
                     address, name, v_aa, v_bb, v_cc
@@ -829,7 +832,7 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, #+{}",
                     address, name, v_aa, v_bb, v_cc
@@ -848,7 +851,7 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, {}",
                     address, name, v_a, v_b, target_address_str
@@ -859,7 +862,7 @@ pub fn disassemble_method(
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let imm_cccc = insns[pc + 1];
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, #+{}",
                     address, name, v_a, v_b, imm_cccc
@@ -870,7 +873,7 @@ pub fn disassemble_method(
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, <type,field>@{}",
                     address, name, v_a, v_b, cccc
@@ -881,7 +884,7 @@ pub fn disassemble_method(
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}, fieldoff_{}",
                     address, name, v_a, v_b, cccc
@@ -899,13 +902,13 @@ pub fn disassemble_method(
                 } else {
                     "invalid".to_string()
                 };
-                writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
                 3
             }
             InstructionFormat::Format32x => {
                 let v_aaaa = insns[pc + 1];
                 let v_bbbb = insns[pc + 2];
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, v{}",
                     address, name, v_aaaa, v_bbbb
@@ -917,7 +920,7 @@ pub fn disassemble_method(
                 let bb_low = insns[pc + 1];
                 let bb_high = insns[pc + 2];
                 let bb = ((bb_high as u32) << 16) | (bb_low as u32);
-                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bb);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bb);
                 3
             }
             InstructionFormat::Format31t => {
@@ -933,7 +936,7 @@ pub fn disassemble_method(
                     "invalid".to_string()
                 };
 
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, {}",
                     address, name, v_aa, target_address_str
@@ -951,7 +954,7 @@ pub fn disassemble_method(
                     .cloned()
                     .unwrap_or_else(|| "<invalid_string>".to_string());
 
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} v{}, \"{}\"string@{}",
                     address, name, v_aa, string_repr, bbbb
@@ -978,7 +981,7 @@ pub fn disassemble_method(
 
                 match v_a {
                     5 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, <meth,site,type>@{}",
                             address, name, v_c, v_d, v_e, v_f, v_g, bbbb
@@ -986,7 +989,7 @@ pub fn disassemble_method(
                         3
                     }
                     4 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, kind_{}",
                             address, name, v_c, v_d, v_e, v_f, bbbb
@@ -994,7 +997,7 @@ pub fn disassemble_method(
                         3
                     }
                     3 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}}}, kind_{}",
                             address, name, v_c, v_d, v_e, bbbb
@@ -1002,7 +1005,7 @@ pub fn disassemble_method(
                         3
                     }
                     2 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}}}, kind_{}",
                             address, name, v_c, v_d, bbbb
@@ -1010,7 +1013,7 @@ pub fn disassemble_method(
                         3
                     }
                     1 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}}}, kind_{}",
                             address, name, v_c, bbbb
@@ -1018,11 +1021,11 @@ pub fn disassemble_method(
                         3
                     }
                     0 => {
-                        writeln!(writer, "0x{:04x}: {} {{}}, kind_{}", address, name, bbbb);
+                        let _ = writeln!(writer, "0x{:04x}: {} {{}}, kind_{}", address, name, bbbb);
                         3
                     }
                     _ => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} (Error: invalid register count {})",
                             address, name, v_a
@@ -1047,7 +1050,7 @@ pub fn disassemble_method(
 
                 match v_a {
                     5 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, vtaboff_{}",
                             address, name, v_c, v_d, v_e, v_f, v_g, bbbb
@@ -1055,7 +1058,7 @@ pub fn disassemble_method(
                         3
                     }
                     4 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, vtaboff_{}",
                             address, name, v_c, v_d, v_e, v_f, bbbb
@@ -1063,7 +1066,7 @@ pub fn disassemble_method(
                         3
                     }
                     3 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}}}, vtaboff_{}",
                             address, name, v_c, v_d, v_e, bbbb
@@ -1071,7 +1074,7 @@ pub fn disassemble_method(
                         3
                     }
                     2 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}}}, vtaboff_{}",
                             address, name, v_c, v_d, bbbb
@@ -1079,7 +1082,7 @@ pub fn disassemble_method(
                         3
                     }
                     1 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}}}, vtaboff_{}",
                             address, name, v_c, bbbb
@@ -1087,7 +1090,7 @@ pub fn disassemble_method(
                         3
                     }
                     _ => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} (Error: invalid register count {})",
                             address, name, v_a
@@ -1112,7 +1115,7 @@ pub fn disassemble_method(
 
                 match v_a {
                     5 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, inline_{}",
                             address, name, v_c, v_d, v_e, v_f, v_g, bbbb
@@ -1120,7 +1123,7 @@ pub fn disassemble_method(
                         3
                     }
                     4 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, inline_{}",
                             address, name, v_c, v_d, v_e, v_f, bbbb
@@ -1128,7 +1131,7 @@ pub fn disassemble_method(
                         3
                     }
                     3 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}, v{}}}, inline_{}",
                             address, name, v_c, v_d, v_e, bbbb
@@ -1136,7 +1139,7 @@ pub fn disassemble_method(
                         3
                     }
                     2 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}, v{}}}, inline_{}",
                             address, name, v_c, v_d, bbbb
@@ -1144,7 +1147,7 @@ pub fn disassemble_method(
                         3
                     }
                     1 => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} {{v{}}}, inline_{}",
                             address, name, v_c, bbbb
@@ -1152,7 +1155,7 @@ pub fn disassemble_method(
                         3
                     }
                     _ => {
-                        writeln!(
+                        let _ = writeln!(
                             writer,
                             "0x{:04x}: {} (Error: invalid register count {})",
                             address, name, v_a
@@ -1178,7 +1181,7 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, <meth,site,type>@{}",
                     address, name, registers_str, bbbb
@@ -1198,7 +1201,7 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, vtaboff@{}",
                     address, name, registers_str, bbbb
@@ -1218,7 +1221,7 @@ pub fn disassemble_method(
                 }
 
                 let registers_str = registers.join(", ");
-                writeln!(
+                let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, inline@{}",
                     address, name, registers_str, bbbb
@@ -1226,11 +1229,11 @@ pub fn disassemble_method(
                 3
             }
             InstructionFormat::Format45cc => {
-                writeln!(writer, "0x{:04x}: {}", address, name);
+                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
                 4
             }
             InstructionFormat::Format4rcc => {
-                writeln!(writer, "0x{:04x}: {}", address, name);
+                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
                 4
             }
             InstructionFormat::Format51l => {
@@ -1244,13 +1247,13 @@ pub fn disassemble_method(
                     | ((bbbb_hi1 as u64) << 32)
                     | ((bbbb_lo2 as u64) << 16)
                     | (bbbb_lo1 as u64);
-                writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bbbb);
+                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bbbb);
                 5
             }
         };
 
         if pc + size_units > insns.len() {
-            writeln!(
+            let _ = writeln!(
                 writer,
                 "0x{:04x}: {} (Error: instruction truncated)",
                 address, "instruction"

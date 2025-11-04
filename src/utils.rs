@@ -115,7 +115,6 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             }
             i += 2;
         // Check if the byte is the first byte range of 3-byte encoding.
-        // TODO(sfx): Check for surrogate pairs.
         } else if input[i] & 0xF0 == 0xE0 {
             // 3-byte sequence
             if i + 2 >= input.len() {
@@ -140,6 +139,73 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
             let code_point = (((input[i] & 0x0F) as u32) << 12)
                 | (((input[i + 1] & 0x3F) as u32) << 6)
                 | ((input[i + 2] & 0x3F) as u32);
+
+            // Check for surrogate pairs in MUTF-8
+            // In MUTF-8, surrogate pairs are encoded as:
+            // High surrogate: 0xED 0xA0-0xBF 0x80-0xBF (U+D800..U+DBFF)
+            // Low surrogate:  0xED 0xB0-0xBF 0x80-0xBF (U+DC00..U+DFFF)
+            if code_point >= 0xD800 && code_point <= 0xDBFF {
+                // High surrogate found, look for low surrogate
+                if i + 5 >= input.len() {
+                    // Not enough bytes for low surrogate, salvage what we have
+                    for j in i..i + 3 {
+                        result.push(input[j] as char);
+                    }
+                    debug!("Decoded string: {} from {:x?}", result, input);
+                    return DecodedString {
+                        string: result,
+                        error: Some(Mutf8Error::UnexpectedEndOfInput(i + 3)),
+                    };
+                }
+
+                // Check if next 3 bytes form a valid low surrogate
+                if input[i + 3] & 0xF0 == 0xE0 &&
+                   input[i + 4] & 0xC0 == 0x80 &&
+                   input[i + 5] & 0xC0 == 0x80 {
+                    
+                    let low_surrogate = (((input[i + 3] & 0x0F) as u32) << 12)
+                        | (((input[i + 4] & 0x3F) as u32) << 6)
+                        | ((input[i + 5] & 0x3F) as u32);
+
+                    if low_surrogate >= 0xDC00 && low_surrogate <= 0xDFFF {
+                        // Valid surrogate pair, combine into code point
+                        let combined_code_point = 0x10000 + 
+                            ((code_point - 0xD800) << 10) + 
+                            (low_surrogate - 0xDC00);
+                        
+                        match char::from_u32(combined_code_point) {
+                            Some(c) => result.push(c),
+                            None => {
+                                // Invalid combined code point, salvage all bytes
+                                for j in i..i + 6 {
+                                    result.push(input[j] as char);
+                                }
+                                debug!("Decoded string: {} from {:x?}", result, input);
+                                return DecodedString {
+                                    string: result,
+                                    error: Some(Mutf8Error::InvalidSequence(i)),
+                                };
+                            }
+                        }
+                        i += 6;
+                        continue;
+                    }
+                }
+                
+                // Not a valid surrogate pair, treat as individual characters
+                for j in i..i + 3 {
+                    result.push(input[j] as char);
+                }
+                i += 3;
+                continue;
+            } else if code_point >= 0xDC00 && code_point <= 0xDFFF {
+                // Low surrogate without preceding high surrogate
+                for j in i..i + 3 {
+                    result.push(input[j] as char);
+                }
+                i += 3;
+                continue;
+            }
 
             match char::from_u32(code_point) {
                 Some(c) => result.push(c),
@@ -177,6 +243,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
     }
 }
 
+#[inline(always)]
 pub fn read_uleb128(input: &[u8]) -> (u32, usize) {
     let mut result = 0;
     let mut shift = 0;
