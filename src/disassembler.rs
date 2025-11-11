@@ -462,7 +462,7 @@ pub fn disassemble_method(
     code_item: &CodeItem,
     string_ids: &[u32],
     string_map: &HashMap<u32, String>,
-    type_map: &HashMap<u32, String>,
+    _type_map: &[String],
     class_name: Option<&str>,
     method_name: Option<&str>,
 ) -> u64 {
@@ -471,8 +471,8 @@ pub fn disassemble_method(
     let mut instruction_count: u64 = 0;
 
     // First pass: collect all payload locations
-    use std::collections::HashSet;
-    let mut payload_pcs: HashSet<usize> = HashSet::new();
+    // Use a fixed-size boolean array for better cache performance
+    let mut payload_pcs = vec![false; insns.len()];
 
     let mut scan_pc = 0;
     let mut payload_count = 0;
@@ -525,7 +525,9 @@ pub fn disassemble_method(
 
                             // Mark all PCs in the payload range
                             for i in 0..payload_size {
-                                payload_pcs.insert(payload_pc + i);
+                                if payload_pc + i < payload_pcs.len() {
+                                    payload_pcs[payload_pc + i] = true;
+                                }
                             }
                             payload_count += 1;
                             if payload_count <= 3 {
@@ -587,7 +589,7 @@ pub fn disassemble_method(
     // All pc increments of 1 are of 16-bit(2 bytes) units not 8-bits(1 byte)
     while pc < insns.len() {
         // Skip if this PC is part of a payload
-        if payload_pcs.contains(&pc) {
+        if pc < payload_pcs.len() && payload_pcs[pc] {
             pc += 1;
             continue;
         }
@@ -718,29 +720,27 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let _ = writeln!(writer, "0x{:04x}: {} v{}", address, name, v_aa);
                 1
-            }
+}
             InstructionFormat::Format10t => {
                 //op +AA (signed 8-bit offset)
                 let offset_raw = ((instruction_unit >> 8) & 0xFF) as i8 as i32;
                 let target_address = ((address as i32) + offset_raw * 2) as usize;
-                let target_address_str = if target_address < insns.len() * 2 {
-                    format!("0x{:04x}", target_address)
+                if target_address < insns.len() * 2 {
+                    let _ = writeln!(writer, "0x{:04x}: {} 0x{:04x}", address, name, target_address);
                 } else {
-                    "invalid".to_string()
-                };
-                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                    let _ = writeln!(writer, "0x{:04x}: {} invalid", address, name);
+                }
                 1
             }
             InstructionFormat::Format20t => {
                 // op +AAAA (signed 16-bit offset)
                 let offset_raw = insns[pc + 1] as i16 as i32;
                 let target_address = ((address as i32) + offset_raw * 2) as usize;
-                let target_address_str = if target_address < insns.len() * 2 {
-                    format!("0x{:04x}", target_address)
+                if target_address < insns.len() * 2 {
+                    let _ = writeln!(writer, "0x{:04x}: {} 0x{:04x}", address, name, target_address);
                 } else {
-                    "invalid".to_string()
-                };
-                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                    let _ = writeln!(writer, "0x{:04x}: {} invalid", address, name);
+                }
                 2
             }
             InstructionFormat::Format20bc => {
@@ -769,7 +769,7 @@ pub fn disassemble_method(
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
-                    "invalid".to_string()
+                    "invalid".into()
                 };
                 let _ = writeln!(
                     writer,
@@ -849,7 +849,7 @@ pub fn disassemble_method(
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
-                    "invalid".to_string()
+                    "invalid".into()
                 };
                 let _ = writeln!(
                     writer,
@@ -900,7 +900,7 @@ pub fn disassemble_method(
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
-                    "invalid".to_string()
+                    "invalid".into()
                 };
                 let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
                 3
@@ -933,7 +933,7 @@ pub fn disassemble_method(
                 let target_address_str = if target_address < insns.len() * 2 {
                     format!("0x{:04x}", target_address)
                 } else {
-                    "invalid".to_string()
+                    "invalid".into()
                 };
 
                 let _ = writeln!(
@@ -1174,13 +1174,16 @@ pub fn disassemble_method(
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
 
-                // Build register range string
-                let mut registers = Vec::with_capacity(v_a as usize);
+                // Build register range string directly without Vec allocation
+                let mut registers_str = String::with_capacity((v_a as usize) * 4);
                 for i in 0..v_a {
-                    registers.push(format!("v{}", cccc + i));
+                    if i > 0 {
+                        registers_str.push_str(", ");
+                    }
+                    registers_str.push_str("v");
+                    registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let registers_str = registers.join(", ");
                 let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, <meth,site,type>@{}",
@@ -1194,13 +1197,16 @@ pub fn disassemble_method(
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
 
-                // Build register range string
-                let mut registers = Vec::with_capacity(v_a as usize);
+                // Build register range string directly without Vec allocation
+                let mut registers_str = String::with_capacity((v_a as usize) * 4);
                 for i in 0..v_a {
-                    registers.push(format!("v{}", cccc + i));
+                    if i > 0 {
+                        registers_str.push_str(", ");
+                    }
+                    registers_str.push_str("v");
+                    registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let registers_str = registers.join(", ");
                 let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, vtaboff@{}",
@@ -1214,13 +1220,16 @@ pub fn disassemble_method(
                 let bbbb = insns[pc + 1];
                 let cccc = insns[pc + 2];
 
-                // Build register range string
-                let mut registers = Vec::with_capacity(v_a as usize);
+                // Build register range string directly without Vec allocation
+                let mut registers_str = String::with_capacity((v_a as usize) * 4);
                 for i in 0..v_a {
-                    registers.push(format!("v{}", cccc + i));
+                    if i > 0 {
+                        registers_str.push_str(", ");
+                    }
+                    registers_str.push_str("v");
+                    registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let registers_str = registers.join(", ");
                 let _ = writeln!(
                     writer,
                     "0x{:04x}: {} {{{}}}, inline@{}",

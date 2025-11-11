@@ -272,12 +272,21 @@ pub fn get_u16_items(dexfile: &[u8], offset: usize, count: usize) -> Vec<u16> {
     );
 
     let slice_u8 = &dexfile[start_byte..end_byte];
-    let mut result = Vec::with_capacity(count);
-    // Assuming little-endian architecture, which is standard for DEX
-    for chunk in slice_u8.chunks_exact(2) {
-        result.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    
+    // Optimize with unsafe casting - avoid loop and individual allocations
+    // Safety: We've verified the bounds and alignment requirements
+    // DEX files are little-endian, matching native little-endian systems
+    assert!(slice_u8.len() % 2 == 0, "Slice length must be even for u16 casting");
+    
+    let (prefix, aligned_slice, suffix) = unsafe { slice_u8.align_to::<u16>() };
+    assert!(prefix.is_empty() && suffix.is_empty(), "Slice must be properly aligned");
+    
+    // Convert from little-endian to native endian if needed
+    if cfg!(target_endian = "little") {
+        aligned_slice.to_vec()
+    } else {
+        aligned_slice.iter().map(|&x| x.to_le()).collect()
     }
-    result
 }
 
 pub fn parse_encoded_field(dexfile: &[u8], offset: usize) -> (EncodedField, usize) {

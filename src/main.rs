@@ -209,7 +209,7 @@ struct Dex<'a> {
     link_data: &'a [u8],
 
     string_map: HashMap<u32, String>,
-    type_map: HashMap<u32, String>,
+    type_map: Vec<String>,
 }
 
 impl Dex<'_> {
@@ -276,17 +276,19 @@ impl Dex<'_> {
         // type_id_items contains indices into string_ids array
         // string_ids[type_id_items[i]] gives us the offset to the string data
         // We need to use that offset to look up in string_map
-        let type_map: HashMap<u32, String> = type_id_items
+        // Since type IDs are sequential from 0, we can use a Vec for O(1) indexing
+        let type_map: Vec<String> = type_id_items
             .iter()
-            .enumerate()
-            .filter_map(|(type_id, &string_id_idx)| {
+            .map(|&string_id_idx| {
                 // string_id_idx is an index into string_ids array, not an offset
-                let string_offset = string_id_items.get(string_id_idx as usize).copied()?;
+                let string_offset = string_id_items.get(string_id_idx as usize).copied()
+                    .unwrap_or(0);
                 string_map
                     .get(&string_offset)
-                    .map(|s| (type_id as u32, s.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| "<invalid_type>".to_string())
             })
-            .collect::<HashMap<u32, String>>();
+            .collect();
 
         info!("Parsing proto ids");
         let proto_id_items = get_items::<proto_id_item>(
@@ -375,9 +377,8 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = dex
-            .type_map
-            .get(&class_def.class_idx)
+        let class_name = dex.type_map
+            .get(class_def.class_idx as usize)
             .cloned()
             .unwrap_or_else(|| format!("UnknownClass{}", i));
         writeln!(writer, "\n# Class: {}", class_name)?;
