@@ -1,4 +1,4 @@
-use crate::types::{
+use crate::dexcore::types::{
     ClassDataItem,
     CodeItem,
     DecodedString,
@@ -159,20 +159,19 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                 }
 
                 // Check if next 3 bytes form a valid low surrogate
-                if input[i + 3] & 0xF0 == 0xE0 &&
-                   input[i + 4] & 0xC0 == 0x80 &&
-                   input[i + 5] & 0xC0 == 0x80 {
-                    
+                if input[i + 3] & 0xF0 == 0xE0
+                    && input[i + 4] & 0xC0 == 0x80
+                    && input[i + 5] & 0xC0 == 0x80
+                {
                     let low_surrogate = (((input[i + 3] & 0x0F) as u32) << 12)
                         | (((input[i + 4] & 0x3F) as u32) << 6)
                         | ((input[i + 5] & 0x3F) as u32);
 
                     if low_surrogate >= 0xDC00 && low_surrogate <= 0xDFFF {
                         // Valid surrogate pair, combine into code point
-                        let combined_code_point = 0x10000 + 
-                            ((code_point - 0xD800) << 10) + 
-                            (low_surrogate - 0xDC00);
-                        
+                        let combined_code_point =
+                            0x10000 + ((code_point - 0xD800) << 10) + (low_surrogate - 0xDC00);
+
                         match char::from_u32(combined_code_point) {
                             Some(c) => result.push(c),
                             None => {
@@ -191,7 +190,7 @@ pub fn decode_mutf8(input: &[u8]) -> DecodedString {
                         continue;
                     }
                 }
-                
+
                 // Not a valid surrogate pair, treat as individual characters
                 for j in i..i + 3 {
                     result.push(input[j] as char);
@@ -272,15 +271,21 @@ pub fn get_u16_items(dexfile: &[u8], offset: usize, count: usize) -> Vec<u16> {
     );
 
     let slice_u8 = &dexfile[start_byte..end_byte];
-    
+
     // Optimize with unsafe casting - avoid loop and individual allocations
     // Safety: We've verified the bounds and alignment requirements
     // DEX files are little-endian, matching native little-endian systems
-    assert!(slice_u8.len() % 2 == 0, "Slice length must be even for u16 casting");
-    
+    assert!(
+        slice_u8.len() % 2 == 0,
+        "Slice length must be even for u16 casting"
+    );
+
     let (prefix, aligned_slice, suffix) = unsafe { slice_u8.align_to::<u16>() };
-    assert!(prefix.is_empty() && suffix.is_empty(), "Slice must be properly aligned");
-    
+    assert!(
+        prefix.is_empty() && suffix.is_empty(),
+        "Slice must be properly aligned"
+    );
+
     // Convert from little-endian to native endian if needed
     if cfg!(target_endian = "little") {
         aligned_slice.to_vec()
@@ -440,6 +445,8 @@ pub fn parse_code_item(dexfile: &[u8], offset: usize) -> (CodeItem, usize) {
         debug_info_off,
         insns_size,
         insns,
+        try_items: None,
+        debug_info: None,
     };
 
     // We don't parse tries/handlers yet, so the bytes read is up to the end of insns + padding

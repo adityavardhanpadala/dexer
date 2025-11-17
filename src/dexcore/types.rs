@@ -11,7 +11,11 @@ pub struct StringDataItem<'a> {
 impl Debug for StringDataItem<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Log undecoded data
-        write!(f, "StringDataItem {{ size: {}, data: {:?} }}", self.size, self.data)
+        write!(
+            f,
+            "StringDataItem {{ size: {}, data: {:?} }}",
+            self.size, self.data
+        )
     }
 }
 
@@ -38,7 +42,7 @@ pub struct field_id_item {
 #[allow(non_camel_case_types)]
 pub struct method_id_item {
     pub class_idx: u16,
-        pub proto_idx: u16,  // Index into proto_ids (was incorrectly named type_idx)
+    pub proto_idx: u16, // Index into proto_ids (was incorrectly named type_idx)
     pub name_idx: u32,
 }
 
@@ -170,16 +174,16 @@ pub struct ClassDataItem {
 }
 
 // Based on https://source.android.com/docs/core/dalvik/dex-format#encoded-field-format
-#[derive(Debug, Clone)] // Added Clone
-#[repr(C)] // repr(C) might not be strictly necessary if we parse field-by-field
+#[derive(Debug, Clone)]
+#[repr(C)]
 pub struct EncodedField {
     pub field_idx_diff: u32, // ULEB128
     pub access_flags: u32,   // ULEB128
 }
 
 // Based on https://source.android.com/docs/core/dalvik/dex-format#encoded-method-format
-#[derive(Debug, Clone)] // Added Clone
-#[repr(C)] // repr(C) might not be strictly necessary if we parse field-by-field
+#[derive(Debug, Clone)]
+#[repr(C)]
 pub struct EncodedMethod {
     pub method_idx_diff: u32, // ULEB128
     pub access_flags: u32,    // ULEB128
@@ -187,7 +191,6 @@ pub struct EncodedMethod {
 }
 
 // Based on https://source.android.com/docs/core/dalvik/dex-format#code-item
-// Note: Changed insns from slice to Vec to hold owned data.
 #[derive(Debug)]
 pub struct CodeItem {
     pub registers_size: u16,
@@ -197,6 +200,15 @@ pub struct CodeItem {
     pub debug_info_off: u32,
     pub insns_size: u32, // size of instructions list, in 16-bit code units
     pub insns: Vec<u16>, // Actual bytecode instructions (owned Vec)
-                         // Optional try_items, handlers follow if tries_size > 0
-                         // Optional debug_info_item follows instructions
+    pub try_items: Option<Vec<TryItem>>,
+    pub debug_info: Option<Vec<u8>>, // Optional debug_info_item follows instructions
+}
+
+// Based on https://source.android.com/docs/core/dalvik/dex-format#try-item-format
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct TryItem {
+    pub start_addr: u32,  // Offset from start of code_item to start of try block
+    pub insn_count: u16,  // Number of instructions in try block
+    pub handler_off: u16, // Offset from start of code_item to handler_list
 }

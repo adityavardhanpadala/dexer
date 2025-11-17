@@ -1,6 +1,7 @@
-use crate::types::CodeItem;
+use crate::dexcore::types::CodeItem;
 use log::{debug, warn};
-use std::{collections::HashMap, fs::File, io::BufWriter, io::Write};
+use std::collections::HashMap;
+use thiserror::Error;
 
 /// Dex Instructions are not fixed size so like x86/amd64 we each instruction has a decode format associated with it.
 // --- Instruction Formats ---
@@ -457,15 +458,122 @@ fn format_size(format: InstructionFormat) -> usize {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    opcode: Opcode,
+    format: InstructionFormat,
+    address: u32,
+    size: u8, // in 16bit units
+    operands: [Operand; 5],
+}
+
+impl Instruction {
+    #[inline]
+    const fn new(opcode: Opcode, format: InstructionFormat, address: u32, size: u8) -> Self {
+        Self {
+            opcode,
+            format,
+            address,
+            size,
+            operands: [Operand::None; 5],
+        }
+    }
+
+    #[inline]
+    fn with_operands(mut self, operands: &[Operand]) -> Self {
+        self.operands[..operands.len()].copy_from_slice(operands);
+        self
+    }
+
+    pub fn is_branch(&self) -> bool {
+        matches!(
+            self.format,
+            InstructionFormat::Format10t
+                | InstructionFormat::Format20t
+                | InstructionFormat::Format21t
+                | InstructionFormat::Format22t
+                | InstructionFormat::Format30t
+                | InstructionFormat::Format31t
+        )
+    }
+
+    pub fn is_invoke(&self) -> bool {
+        matches!(
+            self.opcode,
+            Opcode::INVOKE_DIRECT
+                | Opcode::INVOKE_DIRECT_RANGE
+                | Opcode::INVOKE_STATIC
+                | Opcode::INVOKE_STATIC_RANGE
+                | Opcode::INVOKE_SUPER
+                | Opcode::INVOKE_SUPER_RANGE
+                | Opcode::INVOKE_VIRTUAL
+                | Opcode::INVOKE_VIRTUAL_RANGE
+                | Opcode::INVOKE_INTERFACE
+                | Opcode::INVOKE_INTERFACE_RANGE
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Operand {
+    None,
+    Register(u16),
+    RegisterRange { start: u16, end: u16 },
+    I32(i32),
+    I64(i64),
+    Literal(i64),
+    StringId(u32),
+    TypeId(u16),
+    MethodId(u16),
+    Vtaboff(u32),
+    Offset(i32),
+    FieldId(u16),
+    ProtoId(u32),
+    MethodHandle(u32),
+    FieldOffset(u16),
+}
+
+impl std::fmt::Display for Operand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Operand::None => write!(f, "none"),
+            Operand::Register(reg) => write!(f, "v{}", reg),
+            Operand::RegisterRange { start, end } => write!(f, "v{}-v{}", start, end),
+            Operand::Literal(lit) => write!(f, "{}", lit),
+            Operand::I32(val) => write!(f, "{}", val),
+            Operand::I64(val) => write!(f, "{}", val),
+            Operand::StringId(id) => write!(f, "string_id({})", id),
+            Operand::TypeId(id) => write!(f, "type_id({})", id),
+            Operand::MethodId(id) => write!(f, "method_id({})", id),
+            Operand::Vtaboff(id) => write!(f, "vtaboff({})", id),
+            Operand::Offset(off) => write!(f, "offset({})", off),
+            Operand::FieldId(id) => write!(f, "field_id({})", id),
+            Operand::ProtoId(id) => write!(f, "proto_id({})", id),
+            Operand::MethodHandle(id) => write!(f, "method_handle({})", id),
+            Operand::FieldOffset(off) => write!(f, "field_offset({})", off),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum DisassemblyError {
+    #[error("Invalid opcode")]
+    InvalidOpcode(u8),
+    #[error("Invalid format")]
+    InvalidFormat,
+    #[error("Invalid operand")]
+    InvalidOperand,
+}
+
 pub fn disassemble_method(
-    writer: &mut BufWriter<File>,
     code_item: &CodeItem,
     string_ids: &[u32],
     string_map: &HashMap<u32, String>,
     _type_map: &[String],
     class_name: Option<&str>,
     method_name: Option<&str>,
-) -> u64 {
+) -> Result<Vec<Instruction>, DisassemblyError> {
+    let mut instructions: Vec<Instruction> = Vec::with_capacity(code_item.insns_size as usize);
     let insns = &code_item.insns;
     let mut pc: usize = 0;
     let mut instruction_count: u64 = 0;
@@ -655,13 +763,7 @@ pub fn disassemble_method(
                 }
                 eprintln!("\n==============================\n");
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: *** ERROR: Unknown opcode 0x{:02x} - stopping disassembly here ***",
-                    address, opcode_byte
-                );
-
-                return instruction_count;
+                return Err(DisassemblyError::InvalidOpcode(opcode_byte));
             }
         };
 
@@ -671,30 +773,28 @@ pub fn disassemble_method(
         let format_size = format_size(format);
 
         if pc + format_size > insns.len() {
-            let _ = writeln!(
-                writer,
-                "0x{:04x}: {} (Error: instruction truncated, needs {} units but only {} available)",
-                address,
-                name,
-                format_size,
-                insns.len() - pc
-            );
             break;
         }
 
         let size_units = match format {
             InstructionFormat::Format00x => {
-                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
+                instructions.push(Instruction::new(opcode, format, address as u32, 1));
                 1
             }
             InstructionFormat::Format10x => {
-                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
+                instructions.push(Instruction::new(opcode, format, address as u32, 1));
                 1
             }
             InstructionFormat::Format12x => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
-                let _ = writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_a, v_b);
+
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::Register(v_b);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 1)
+                        .with_operands(&[operand_a, operand_b]),
+                );
                 1
             }
             InstructionFormat::Format11n => {
@@ -708,49 +808,68 @@ pub fn disassemble_method(
                 } else {
                     imm_b_raw as i32
                 };
-                let sign = if imm_b >= 0 { "+" } else { "" };
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, #{}{}",
-                    address, name, v_a, sign, imm_b
+                let _sign = if imm_b >= 0 { "+" } else { "" };
+
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::I32(imm_b);
+
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 1)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 1
             }
             InstructionFormat::Format11x => {
                 let v_aa = (instruction_unit >> 8) & 0xFF;
-                let _ = writeln!(writer, "0x{:04x}: {} v{}", address, name, v_aa);
+                let operand_a = Operand::Register(v_aa);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 1)
+                        .with_operands(&[operand_a]),
+                );
                 1
-}
+            }
             InstructionFormat::Format10t => {
                 //op +AA (signed 8-bit offset)
                 let offset_raw = ((instruction_unit >> 8) & 0xFF) as i8 as i32;
                 let target_address = ((address as i32) + offset_raw * 2) as usize;
-                if target_address < insns.len() * 2 {
-                    let _ = writeln!(writer, "0x{:04x}: {} 0x{:04x}", address, name, target_address);
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
                 } else {
-                    let _ = writeln!(writer, "0x{:04x}: {} invalid", address, name);
-                }
+                    "invalid".into()
+                };
+                let operand_a = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 1)
+                        .with_operands(&[operand_a]),
+                );
                 1
             }
             InstructionFormat::Format20t => {
                 // op +AAAA (signed 16-bit offset)
                 let offset_raw = insns[pc + 1] as i16 as i32;
                 let target_address = ((address as i32) + offset_raw * 2) as usize;
-                if target_address < insns.len() * 2 {
-                    let _ = writeln!(writer, "0x{:04x}: {} 0x{:04x}", address, name, target_address);
+                let target_address_str = if target_address < insns.len() * 2 {
+                    format!("0x{:04x}", target_address)
                 } else {
-                    let _ = writeln!(writer, "0x{:04x}: {} invalid", address, name);
-                }
+                    "invalid".into()
+                };
+                let operand_a = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a]),
+                );
                 2
             }
             InstructionFormat::Format20bc => {
                 // op vAA, kind@BBBB
+                // TODO(sfx): Verify the operand types.
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let k_bbbb = insns[pc + 1];
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, kind_{}",
-                    address, name, v_aa, k_bbbb
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::MethodId(k_bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 2
             }
@@ -758,7 +877,12 @@ pub fn disassemble_method(
                 // op vAA, vBBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bbbb = insns[pc + 1];
-                let _ = writeln!(writer, "0x{:04x}: {} v{}, v{}", address, name, v_aa, v_bbbb);
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::Register(v_bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
+                );
                 2
             }
             InstructionFormat::Format21t => {
@@ -771,18 +895,24 @@ pub fn disassemble_method(
                 } else {
                     "invalid".into()
                 };
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, {}",
-                    address, name, v_aa, target_address_str
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 2
             }
             InstructionFormat::Format21s => {
                 // op vAA, #+BBBB
                 let v_aa = (instruction_unit >> 8) & 0xFF;
-                let imm = insns[pc + 1];
-                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, imm);
+                let imm = insns[pc + 1] as i16 as i32; // Sign-extend 16-bit value
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::I32(imm);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
+                );
                 2
             }
             InstructionFormat::Format21h => {
@@ -790,16 +920,16 @@ pub fn disassemble_method(
                 // op vAA, #+BBBB000000000000 (for const-wide/high16)
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
+                let operand_a = Operand::Register(v_aa);
                 // Check opcode to determine shift amount
-                let imm_str = match opcode {
-                    Opcode::CONST_HIGH16 => format!("{}", (bbbb as i32) << 16),
-                    Opcode::CONST_WIDE_HIGH16 => format!("{}", (bbbb as i64) << 48),
-                    _ => format!("{}", bbbb), // Default case
+                let operand_b = match opcode {
+                    Opcode::CONST_HIGH16 => Operand::I32((bbbb as i32) << 16),
+                    Opcode::CONST_WIDE_HIGH16 => Operand::I64((bbbb as i64) << 48),
+                    _ => Operand::I32(bbbb as i32),
                 };
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, #+{}",
-                    address, name, v_aa, imm_str
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 2
             }
@@ -807,10 +937,22 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let bbbb = insns[pc + 1];
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, <type,field,met,proto,string>@{}",
-                    address, name, v_aa, bbbb
+                let operand_a = Operand::Register(v_aa);
+                // Determine operand type based on opcode
+                let operand_b = match opcode {
+                    Opcode::CONST_STRING | Opcode::CONST_STRING_JUMBO => Operand::StringId(bbbb as u32),
+                    Opcode::CONST_CLASS | Opcode::CHECK_CAST | Opcode::NEW_INSTANCE => Operand::TypeId(bbbb),
+                    Opcode::CONST_METHOD_HANDLE => Operand::MethodHandle(bbbb as u32),
+                    Opcode::CONST_METHOD_TYPE => Operand::ProtoId(bbbb as u32),
+                    Opcode::SGET | Opcode::SGET_WIDE | Opcode::SGET_OBJECT | Opcode::SGET_BOOLEAN
+                    | Opcode::SGET_BYTE | Opcode::SGET_CHAR | Opcode::SGET_SHORT
+                    | Opcode::SPUT | Opcode::SPUT_WIDE | Opcode::SPUT_OBJECT | Opcode::SPUT_BOOLEAN
+                    | Opcode::SPUT_BYTE | Opcode::SPUT_CHAR | Opcode::SPUT_SHORT => Operand::FieldId(bbbb),
+                    _ => Operand::MethodId(bbbb), // Default fallback
+                };
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 2
             }
@@ -820,10 +962,12 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, v{}",
-                    address, name, v_aa, v_bb, v_cc
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::Register(v_bb);
+                let operand_c = Operand::Register(v_cc);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
@@ -832,10 +976,12 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let v_bb = (insns[pc + 1] >> 8) & 0xFF;
                 let v_cc = insns[pc + 1] & 0xFF;
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, #+{}",
-                    address, name, v_aa, v_bb, v_cc
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::Register(v_bb);
+                let operand_c = Operand::I32(v_cc as i8 as i32); // Sign-extend 8-bit value
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
@@ -851,21 +997,25 @@ pub fn disassemble_method(
                 } else {
                     "invalid".into()
                 };
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, {}",
-                    address, name, v_a, v_b, target_address_str
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::Register(v_b);
+                let operand_c = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
             InstructionFormat::Format22s => {
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
-                let imm_cccc = insns[pc + 1];
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, #+{}",
-                    address, name, v_a, v_b, imm_cccc
+                let imm_cccc = insns[pc + 1] as i16 as i32; // Sign-extend 16-bit value
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::Register(v_b);
+                let operand_c = Operand::I32(imm_cccc);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
@@ -873,10 +1023,25 @@ pub fn disassemble_method(
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, <type,field>@{}",
-                    address, name, v_a, v_b, cccc
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::Register(v_b);
+                // Determine operand type based on opcode
+                let operand_c = match opcode {
+                    Opcode::INSTANCE_OF | Opcode::NEW_ARRAY => Operand::TypeId(cccc),
+                    Opcode::IGET | Opcode::IGET_WIDE | Opcode::IGET_OBJECT | Opcode::IGET_BOOLEAN
+                    | Opcode::IGET_BYTE | Opcode::IGET_CHAR | Opcode::IGET_SHORT
+                    | Opcode::IPUT | Opcode::IPUT_WIDE | Opcode::IPUT_OBJECT | Opcode::IPUT_BOOLEAN
+                    | Opcode::IPUT_BYTE | Opcode::IPUT_CHAR | Opcode::IPUT_SHORT
+                    | Opcode::IGET_QUICK | Opcode::IGET_WIDE_QUICK | Opcode::IGET_OBJECT_QUICK
+                    | Opcode::IPUT_QUICK | Opcode::IPUT_WIDE_QUICK | Opcode::IPUT_OBJECT_QUICK
+                    | Opcode::INVOKE_IPUT_BYTE_QUICK | Opcode::INVOKE_IPUT_SHORT_QUICK
+                    | Opcode::INVOKE_IGET_BOOLEAN_QUICK | Opcode::INVOKE_IGET_BYTE_QUICK
+                    | Opcode::INVOKE_IGET_CHAR_QUICK | Opcode::INVOKE_IGET_SHORT_QUICK => Operand::FieldId(cccc),
+                    _ => Operand::TypeId(cccc), // Default fallback
+                };
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
@@ -884,10 +1049,12 @@ pub fn disassemble_method(
                 let v_a = (instruction_unit >> 8) & 0x0F;
                 let v_b = (instruction_unit >> 12) & 0x0F;
                 let cccc = insns[pc + 1];
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}, fieldoff_{}",
-                    address, name, v_a, v_b, cccc
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::Register(v_b);
+                let operand_c = Operand::FieldOffset(cccc);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 2)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
                 );
                 2
             }
@@ -902,16 +1069,21 @@ pub fn disassemble_method(
                 } else {
                     "invalid".into()
                 };
-                let _ = writeln!(writer, "0x{:04x}: {} {}", address, name, target_address_str);
+                let operand_a = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a]),
+                );
                 3
             }
             InstructionFormat::Format32x => {
                 let v_aaaa = insns[pc + 1];
                 let v_bbbb = insns[pc + 2];
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, v{}",
-                    address, name, v_aaaa, v_bbbb
+                let operand_a = Operand::Register(v_aaaa);
+                let operand_b = Operand::Register(v_bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
@@ -920,7 +1092,12 @@ pub fn disassemble_method(
                 let bb_low = insns[pc + 1];
                 let bb_high = insns[pc + 2];
                 let bb = ((bb_high as u32) << 16) | (bb_low as u32);
-                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bb);
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::I32(bb as i32);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
+                );
                 3
             }
             InstructionFormat::Format31t => {
@@ -935,11 +1112,11 @@ pub fn disassemble_method(
                 } else {
                     "invalid".into()
                 };
-
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, {}",
-                    address, name, v_aa, target_address_str
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::Offset(offset_raw);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
@@ -954,10 +1131,11 @@ pub fn disassemble_method(
                     .cloned()
                     .unwrap_or_else(|| "<invalid_string>".to_string());
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} v{}, \"{}\"string@{}",
-                    address, name, v_aa, string_repr, bbbb
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::StringId(bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
@@ -979,56 +1157,61 @@ pub fn disassemble_method(
                 let v_e = (insns[pc + 2] >> 8) & 0x0F;
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::MethodId(bbbb);
+                let operand_c = Operand::Register(v_c);
+                let operand_d = Operand::Register(v_d);
+                let operand_e = Operand::Register(v_e);
+                let operand_f = Operand::Register(v_f);
+                let operand_g = Operand::Register(v_g);
+
                 match v_a {
                     5 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, <meth,site,type>@{}",
-                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g]),
                         );
                         3
                     }
                     4 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, kind_{}",
-                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
                         );
                         3
                     }
                     3 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}}}, kind_{}",
-                            address, name, v_c, v_d, v_e, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_b]),
                         );
                         3
                     }
                     2 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}}}, kind_{}",
-                            address, name, v_c, v_d, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_b]),
                         );
                         3
                     }
                     1 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}}}, kind_{}",
-                            address, name, v_c, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_b]),
                         );
                         3
                     }
                     0 => {
-                        let _ = writeln!(writer, "0x{:04x}: {} {{}}, kind_{}", address, name, bbbb);
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_b]),
+                        );
                         3
                     }
                     _ => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} (Error: invalid register count {})",
-                            address, name, v_a
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_a]),
                         );
                         3
                     }
@@ -1048,52 +1231,55 @@ pub fn disassemble_method(
                 let v_e = (insns[pc + 2] >> 8) & 0x0F;
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
+                let operand_a = Operand::Register(v_a);
+                // TODO(sfx): Fix the cast
+                let operand_b = Operand::Vtaboff(bbbb.into());
+                let operand_c = Operand::Register(v_c);
+                let operand_d = Operand::Register(v_d);
+                let operand_e = Operand::Register(v_e);
+                let operand_f = Operand::Register(v_f);
+                let operand_g = Operand::Register(v_g);
+
                 match v_a {
                     5 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, vtaboff_{}",
-                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g, operand_b]),
                         );
                         3
                     }
                     4 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, vtaboff_{}",
-                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
                         );
                         3
                     }
                     3 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}}}, vtaboff_{}",
-                            address, name, v_c, v_d, v_e, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_b]),
                         );
                         3
                     }
                     2 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}}}, vtaboff_{}",
-                            address, name, v_c, v_d, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_b]),
                         );
                         3
                     }
                     1 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}}}, vtaboff_{}",
-                            address, name, v_c, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_b]),
                         );
                         3
                     }
                     _ => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} (Error: invalid register count {})",
-                            address, name, v_a
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_b]),
                         );
                         3
                     }
@@ -1113,52 +1299,54 @@ pub fn disassemble_method(
                 let v_e = (insns[pc + 2] >> 8) & 0x0F;
                 let v_f = (insns[pc + 2] >> 12) & 0x0F;
 
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::MethodId(bbbb);
+                let operand_c = Operand::Register(v_c);
+                let operand_d = Operand::Register(v_d);
+                let operand_e = Operand::Register(v_e);
+                let operand_f = Operand::Register(v_f);
+                let operand_g = Operand::Register(v_g);
+
                 match v_a {
                     5 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}, v{}}}, inline_{}",
-                            address, name, v_c, v_d, v_e, v_f, v_g, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g, operand_b]),
                         );
                         3
                     }
                     4 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}, v{}}}, inline_{}",
-                            address, name, v_c, v_d, v_e, v_f, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
                         );
                         3
                     }
                     3 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}, v{}}}, inline_{}",
-                            address, name, v_c, v_d, v_e, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_e, operand_b]),
                         );
                         3
                     }
                     2 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}, v{}}}, inline_{}",
-                            address, name, v_c, v_d, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_d, operand_b]),
                         );
                         3
                     }
                     1 => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} {{v{}}}, inline_{}",
-                            address, name, v_c, bbbb
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_c, operand_b]),
                         );
                         3
                     }
                     _ => {
-                        let _ = writeln!(
-                            writer,
-                            "0x{:04x}: {} (Error: invalid register count {})",
-                            address, name, v_a
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 3)
+                                .with_operands(&[operand_a]),
                         );
                         3
                     }
@@ -1184,10 +1372,11 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} {{{}}}, <meth,site,type>@{}",
-                    address, name, registers_str, bbbb
+                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_b = Operand::MethodId(bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
@@ -1207,10 +1396,11 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} {{{}}}, vtaboff@{}",
-                    address, name, registers_str, bbbb
+                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_b = Operand::Vtaboff(bbbb as u32);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
@@ -1230,19 +1420,122 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let _ = writeln!(
-                    writer,
-                    "0x{:04x}: {} {{{}}}, inline@{}",
-                    address, name, registers_str, bbbb
+                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_b = Operand::MethodId(bbbb);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 3)
+                        .with_operands(&[operand_a, operand_b]),
                 );
                 3
             }
             InstructionFormat::Format45cc => {
-                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
+                // A|G|op BBBB F|E|D|C HHHH
+                // variadic: [A=5] op {vC..vG}, meth@BBBB, proto@HHHH
+                let v_a = (instruction_unit >> 12) & 0x0F;
+                let v_g = (instruction_unit >> 8) & 0x0F;
+                let bbbb = insns[pc + 1];
+                let v_c = (insns[pc + 2] >> 0) & 0x0F;
+                let v_d = (insns[pc + 2] >> 4) & 0x0F;
+                let v_e = (insns[pc + 2] >> 8) & 0x0F;
+                let v_f = (insns[pc + 2] >> 12) & 0x0F;
+                let hhhh = insns[pc + 3];
+
+                let operand_a = Operand::Register(v_a);
+                let operand_b = Operand::MethodId(bbbb);
+                let operand_c = Operand::ProtoId(hhhh as u32);
+                let operand_d = Operand::Register(v_c);
+                let operand_e = Operand::Register(v_d);
+                let operand_f = Operand::Register(v_e);
+                let operand_g = Operand::Register(v_f);
+                let operand_h = Operand::Register(v_g);
+
+                // Build register list based on v_a
+                let mut registers_str = String::with_capacity((v_a as usize) * 4);
+                if v_a > 0 {
+                    registers_str.push_str("v");
+                    registers_str.push_str(&v_c.to_string());
+                    if v_a > 1 {
+                        registers_str.push_str(", v");
+                        registers_str.push_str(&v_d.to_string());
+                    }
+                    if v_a > 2 {
+                        registers_str.push_str(", v");
+                        registers_str.push_str(&v_e.to_string());
+                    }
+                    if v_a > 3 {
+                        registers_str.push_str(", v");
+                        registers_str.push_str(&v_f.to_string());
+                    }
+                    if v_a > 4 {
+                        registers_str.push_str(", v");
+                        registers_str.push_str(&v_g.to_string());
+                    }
+                }
+
+                match v_a {
+                    5 => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_d, operand_e, operand_f, operand_g, operand_h, operand_b, operand_c]),
+                        );
+                    }
+                    4 => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_d, operand_e, operand_f, operand_g, operand_b, operand_c]),
+                        );
+                    }
+                    3 => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_d, operand_e, operand_f, operand_b, operand_c]),
+                        );
+                    }
+                    2 => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_d, operand_e, operand_b, operand_c]),
+                        );
+                    }
+                    1 => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_d, operand_b, operand_c]),
+                        );
+                    }
+                    _ => {
+                        instructions.push(
+                            Instruction::new(opcode, format, address as u32, 4)
+                                .with_operands(&[operand_b, operand_c]),
+                        );
+                    }
+                }
                 4
             }
             InstructionFormat::Format4rcc => {
-                let _ = writeln!(writer, "0x{:04x}: {}", address, name);
+                // AA|op BBBB CCCC HHHH
+                // op> {vCCCC..vNNNN}, meth@BBBB, proto@HHHH
+                let v_a = (instruction_unit >> 8) & 0xFF;
+                let bbbb = insns[pc + 1];
+                let cccc = insns[pc + 2];
+                let hhhh = insns[pc + 3];
+
+                let mut registers_str = String::with_capacity((v_a as usize) * 4);
+                for i in 0..v_a {
+                    if i > 0 {
+                        registers_str.push_str(", ");
+                    }
+                    registers_str.push_str("v");
+                    registers_str.push_str(&(cccc + i).to_string());
+                }
+
+                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_b = Operand::MethodId(bbbb);
+                let operand_c = Operand::ProtoId(hhhh as u32);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 4)
+                        .with_operands(&[operand_a, operand_b, operand_c]),
+                );
                 4
             }
             InstructionFormat::Format51l => {
@@ -1256,21 +1549,21 @@ pub fn disassemble_method(
                     | ((bbbb_hi1 as u64) << 32)
                     | ((bbbb_lo2 as u64) << 16)
                     | (bbbb_lo1 as u64);
-                let _ = writeln!(writer, "0x{:04x}: {} v{}, #+{}", address, name, v_aa, bbbb);
+                let operand_a = Operand::Register(v_aa);
+                let operand_b = Operand::I64(bbbb as i64);
+                instructions.push(
+                    Instruction::new(opcode, format, address as u32, 5)
+                        .with_operands(&[operand_a, operand_b]),
+                );
                 5
             }
         };
 
         if pc + size_units > insns.len() {
-            let _ = writeln!(
-                writer,
-                "0x{:04x}: {} (Error: instruction truncated)",
-                address, "instruction"
-            );
             break; // Stop processing if we hit truncated data
         }
 
         pc += size_units;
     }
-    instruction_count
+    Ok(instructions)
 }

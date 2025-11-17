@@ -12,6 +12,7 @@ simple_logger = "*"
 adler32 = "*"
 bitflags = "2.6.0"
 pico-args = "0.5.0"
+thiserror = "2.0.17"
 
 
 [profile.release]

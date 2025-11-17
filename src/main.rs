@@ -1,6 +1,4 @@
-mod disassembler;
-mod types;
-mod utils;
+mod dexcore;
 
 use pico_args::Arguments;
 use std::error::Error;
@@ -19,14 +17,9 @@ use std::{
     usize,
 };
 
-use disassembler::disassemble_method;
-use types::{class_def_item, field_id_item, method_id_item, proto_id_item};
-use utils::{
-    decode_mutf8, get_items, get_method_signature, get_string_data_item, get_u32_items,
-    parse_class_data_item, parse_code_item,
-};
-
-use adler32;
+use crate::dexcore::Dex;
+use crate::dexcore::disassembler::disassemble_method;
+use crate::dexcore::utils::{get_method_signature, parse_class_data_item, parse_code_item};
 
 /// Throughput metrics for instruction processing
 #[derive(Debug, Default)]
@@ -157,189 +150,6 @@ fn print_help() {
     println!("        --show-stats            Show instruction throughput metrics");
 }
 
-/// Dex Header Struct
-/// Size : 112 bytes
-#[allow(dead_code)]
-#[derive(Debug, Default)]
-struct Header {
-    magic: [u8; 8],
-    checksum: u32,
-    signature: [u8; 20],
-    file_size: u32,
-    header_size: u32,
-    endian_tag: u32,
-    link_size: u32,
-    link_off: u32,
-    map_off: u32,
-    string_ids_size: u32,
-    string_ids_off: u32,
-    type_ids_size: u32,
-    type_ids_off: u32,
-    proto_ids_size: u32,
-    proto_ids_off: u32,
-    field_ids_size: u32,
-    field_ids_off: u32,
-    method_ids_size: u32,
-    method_ids_off: u32,
-    class_defs_size: u32,
-    class_defs_off: u32,
-    data_size: u32,
-    data_off: u32,
-}
-
-impl Header {
-    fn new(header: &[u8]) -> &Self {
-        unsafe { &*(header.as_ptr() as *const Self) }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct Dex<'a> {
-    header: &'a Header,
-    string_ids: &'a [u32],
-    type_ids: &'a [u32],
-    proto_ids: &'a [proto_id_item],
-    field_ids: &'a [field_id_item],
-    method_ids: &'a [method_id_item],
-    class_defs: &'a [class_def_item],
-    call_site_ids: &'a [u8],
-    method_handles: &'a [u8],
-    data: &'a [u8],
-    link_data: &'a [u8],
-
-    string_map: HashMap<u32, String>,
-    type_map: Vec<String>,
-}
-
-impl Dex<'_> {
-    /// Validate dex file and parse it into a Dex struct and associated maps
-    /// # Arguments
-    /// * `dexfile` - Memory mapped dex file
-    /// Returns the Dex struct, string map, and type map
-    fn new(dexfile: &Mmap) -> Result<Dex<'_>> {
-        info!("Parsing header");
-        let header: &Header = Header::new(&dexfile[0..112]);
-
-        match &header.magic {
-            b"dex\n035\0" | b"dex\n036\0" | b"dex\n037\0" | b"dex\n038\0" | b"dex\n039\0" => {
-                info!("Found dex file")
-            }
-            _ => return Err(format!("Invalid dex magic: {:?}", &header.magic).into()),
-        }
-
-        // Verify checksum
-        let computed_checksum = adler32::adler32(BufReader::new(&dexfile[12..]))?;
-        if computed_checksum != header.checksum {
-            warn!(
-                "Checksum mismatch: computed 0x{:x} != header 0x{:x}",
-                computed_checksum, header.checksum
-            );
-        } else {
-            info!("Checksum match (0x{:x}). Valid dex found.", header.checksum);
-        }
-
-        info!("Parsing strings ids");
-        let string_id_items = get_u32_items(
-            dexfile,
-            header.string_ids_off as usize,
-            header.string_ids_size as usize,
-        );
-
-        let string_map: HashMap<u32, String> = string_id_items
-            .iter()
-            .map(|&item_offset| {
-                let str_data_item = get_string_data_item(dexfile, item_offset as usize);
-                debug!(
-                    "String data item: {:?} len: {:?}",
-                    str_data_item, str_data_item.size
-                );
-                let decoded = decode_mutf8(str_data_item.data);
-                // Log decoding errors if any
-                if let Some(err) = decoded.error {
-                    warn!(
-                        "MUTF-8 decoding error at offset 0x{:x}: {:?}",
-                        item_offset, err
-                    );
-                }
-                (item_offset, decoded.string) // Map original offset to string
-            })
-            .collect();
-
-        info!("Parsing type ids");
-        let type_id_items = get_u32_items(
-            dexfile,
-            header.type_ids_off as usize,
-            header.type_ids_size as usize,
-        );
-
-        // type_id_items contains indices into string_ids array
-        // string_ids[type_id_items[i]] gives us the offset to the string data
-        // We need to use that offset to look up in string_map
-        // Since type IDs are sequential from 0, we can use a Vec for O(1) indexing
-        let type_map: Vec<String> = type_id_items
-            .iter()
-            .map(|&string_id_idx| {
-                // string_id_idx is an index into string_ids array, not an offset
-                let string_offset = string_id_items.get(string_id_idx as usize).copied()
-                    .unwrap_or(0);
-                string_map
-                    .get(&string_offset)
-                    .cloned()
-                    .unwrap_or_else(|| "<invalid_type>".to_string())
-            })
-            .collect();
-
-        info!("Parsing proto ids");
-        let proto_id_items = get_items::<proto_id_item>(
-            dexfile,
-            header.proto_ids_off as usize,
-            header.proto_ids_size as usize,
-        );
-
-        info!("Parsing field ids");
-        let field_id_items = get_items::<field_id_item>(
-            dexfile,
-            header.field_ids_off as usize,
-            header.field_ids_size as usize,
-        );
-
-        info!("Parsing method ids");
-        let method_id_items = get_items::<method_id_item>(
-            dexfile,
-            header.method_ids_off as usize,
-            header.method_ids_size as usize,
-        );
-
-        info!("Parsing class definitions");
-        let class_def_items = get_items::<class_def_item>(
-            dexfile,
-            header.class_defs_off as usize,
-            header.class_defs_size as usize,
-        );
-
-        let dex_struct = Dex {
-            header,
-            string_ids: string_id_items,
-            type_ids: type_id_items,
-            proto_ids: proto_id_items,
-            field_ids: field_id_items,
-            method_ids: method_id_items,
-            class_defs: class_def_items,
-
-            call_site_ids: &[],
-            method_handles: &[],
-            data: &[],
-            link_data: &[],
-
-            string_map,
-            type_map,
-        };
-
-        Ok(dex_struct)
-    }
-}
-
 fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
     let mut result = Vec::new();
     for fpath in fpaths {
@@ -377,23 +187,19 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
     let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
 
     for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = dex.type_map
+        let class_name = dex
+            .type_map
             .get(class_def.class_idx as usize)
             .cloned()
             .unwrap_or_else(|| format!("UnknownClass{}", i));
         writeln!(writer, "\n# Class: {}", class_name)?;
 
         if class_def.class_data_off == 0 {
-            writeln!(writer, "# (No class data)")?;
             continue;
         }
 
         if (class_def.class_data_off as usize) >= dexfile.len() {
-            warn!(
-                "Class data_off 0x{:x} is out of bounds for class {}",
-                class_def.class_data_off, class_name
-            );
-            writeln!(writer, "# (Error: Class data offset out of bounds)")?;
+            // Error: Class data offset out of bounds"
             continue;
         }
 
@@ -456,19 +262,19 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
                             parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let instruction_count = disassemble_method(
-                            &mut writer,
+                        let instructions = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
                             &dex.type_map,
                             Some(&class_name),
                             Some(&method_full_name),
-                        );
+                        )?;
+
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
-                        metrics.add_method(instruction_count, instruction_bytes as u64);
+                        metrics.add_method(instructions.len() as u64, instruction_bytes as u64);
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
@@ -552,19 +358,18 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
                             parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let instruction_count = disassemble_method(
-                            &mut writer,
+                        let instructions = disassemble_method(
                             &code_item,
                             dex.string_ids, // Pass the slice of string offsets
                             &dex.string_map,
                             &dex.type_map,
                             Some(&class_name),
                             Some(&method_full_name),
-                        );
+                        )?;
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
-                        metrics.add_method(instruction_count, instruction_bytes as u64);
+                        metrics.add_method(instructions.len() as u64, instruction_bytes as u64);
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
