@@ -60,7 +60,7 @@ pub fn get_items<T>(dexfile: &[u8], offset: usize, count: usize) -> &[T] {
 // MUTF-8 (Modified UTF-8) is used in dex files for whatever reason
 // they only support 1,2,3 byte encodings.
 pub fn decode_mutf8(input: &[u8]) -> DecodedString {
-    let mut result = String::new();
+    let mut result = String::with_capacity(input.len());
     let mut i = 0;
 
     while i < input.len() {

@@ -21,71 +21,6 @@ use crate::dexcore::Dex;
 use crate::dexcore::disassembler::disassemble_method;
 use crate::dexcore::utils::{get_method_signature, parse_class_data_item, parse_code_item};
 
-/// Throughput metrics for instruction processing
-#[derive(Debug, Default)]
-struct Stats {
-    /// Total number of bytecode instructions processed
-    total_instructions: u64,
-    /// Total number of methods processed
-    total_methods: u64,
-    /// Total time spent processing instructions
-    processing_duration: Duration,
-    /// Total bytes of instruction data processed
-    total_instruction_bytes: u64,
-}
-
-impl Stats {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn add_method(&mut self, instruction_count: u64, instruction_bytes: u64) {
-        self.total_instructions += instruction_count;
-        self.total_methods += 1;
-        self.total_instruction_bytes += instruction_bytes;
-    }
-
-    fn set_duration(&mut self, duration: Duration) {
-        self.processing_duration = duration;
-    }
-
-    fn calculate_throughput(&self) -> (f64, f64) {
-        let seconds = self.processing_duration.as_secs_f64();
-        if seconds > 0.0 {
-            let instructions_per_second = self.total_instructions as f64 / seconds;
-            let megabytes_per_second =
-                (self.total_instruction_bytes as f64 / 1_000_000.0) / seconds;
-            (instructions_per_second, megabytes_per_second)
-        } else {
-            (0.0, 0.0)
-        }
-    }
-
-    fn report(&self) {
-        info!("=== Instruction Throughput Metrics ===");
-        info!("Total instructions processed: {}", self.total_instructions);
-        info!("Total methods processed: {}", self.total_methods);
-        info!("Total instruction bytes: {}", self.total_instruction_bytes);
-        info!(
-            "Processing time: {:.3}s",
-            self.processing_duration.as_secs_f64()
-        );
-
-        let (ips, mbps) = self.calculate_throughput();
-        info!("Instructions per second: {:.2}", ips);
-        info!("Megabytes per second: {:.2} MB/s", mbps);
-
-        if self.total_methods > 0 {
-            let avg_instructions_per_method =
-                self.total_instructions as f64 / self.total_methods as f64;
-            info!(
-                "Average instructions per method: {:.1}",
-                avg_instructions_per_method
-            );
-        }
-    }
-}
-
 /// Command line arguments
 #[derive(Debug)]
 struct Cli {
@@ -162,37 +97,18 @@ fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
 }
 
 /// Dumps the disassembly of methods to a file or stdout based on CLI args.
-fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
-    let output_path = match &cli.output {
-        Some(path) => path,
-        None => return Ok(Stats::new()),
-    };
-
-    info!(
-        "Opening output file for disassembly: {}",
-        output_path.display()
-    );
-    let output_file = File::create(output_path).map_err(|e| {
-        format!(
-            "Failed to create output file {}: {}",
-            output_path.display(),
-            e
-        )
-    })?;
-    let mut writer = BufWriter::new(output_file);
-
+fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<()> {
     info!("Starting disassembly dump...");
 
-    let mut metrics = Stats::new();
-    let mut method_idx_counter: u32 = 0; // Track method index diff accumulation
-
+    let mut method_idx_counter: u32; // Track method index diff accumulation
+    let now = Instant::now();
+    let mut bytes: usize = 0;
     for (i, class_def) in dex.class_defs.iter().enumerate() {
         let class_name = dex
             .type_map
             .get(class_def.class_idx as usize)
             .cloned()
             .unwrap_or_else(|| format!("UnknownClass{}", i));
-        writeln!(writer, "\n# Class: {}", class_name)?;
 
         if class_def.class_data_off == 0 {
             continue;
@@ -200,6 +116,7 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
 
         if (class_def.class_data_off as usize) >= dexfile.len() {
             // Error: Class data offset out of bounds"
+            debug!("Class data offset out of file bounds");
             continue;
         }
 
@@ -208,7 +125,6 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
 
         // --- Process Direct Methods ---
         method_idx_counter = 0; // Reset for direct methods
-        writeln!(writer, "\n## Direct Methods:")?;
         for encoded_method in &class_data.direct_methods {
             method_idx_counter = method_idx_counter.wrapping_add(encoded_method.method_idx_diff); // Accumulate diff
             let method_id_index = method_idx_counter as usize;
@@ -253,11 +169,6 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
                 if should_disassemble && encoded_method.code_off != 0 {
-                    writeln!(
-                        writer,
-                        "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
-                        method_full_name, method_id_index, encoded_method.code_off
-                    )?;
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
@@ -271,40 +182,27 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                             Some(&method_full_name),
                         )?;
 
-
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
-                        metrics.add_method(instructions.len() as u64, instruction_bytes as u64);
+                        bytes += instruction_bytes;
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
                             encoded_method.code_off, method_full_name
                         );
-                        writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
                 } else if should_disassemble {
-                    writeln!(
-                        writer,
-                        "\n### Method: {} (Index: {}, Abstract or Native)",
-                        method_full_name, method_id_index
-                    )?;
                 }
             } else {
                 warn!(
                     "Invalid method_id_index {} derived for class {}",
                     method_id_index, class_name
                 );
-                writeln!(
-                    writer,
-                    "# (Error: Invalid method index {})",
-                    method_id_index
-                )?;
             }
         }
 
         // --- Process Virtual Methods ---
         method_idx_counter = 0; // Reset for virtual methods
-        writeln!(writer, "\n## Virtual Methods:")?;
         for encoded_method in &class_data.virtual_methods {
             method_idx_counter = method_idx_counter.wrapping_add(encoded_method.method_idx_diff); // Accumulate diff
             let method_id_index = method_idx_counter as usize;
@@ -349,11 +247,6 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
                     cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
 
                 if should_disassemble && encoded_method.code_off != 0 {
-                    writeln!(
-                        writer,
-                        "\n### Method: {} (Index: {}, Code Offset: 0x{:x})",
-                        method_full_name, method_id_index, encoded_method.code_off
-                    )?;
                     // Ensure code offset is within bounds
                     if (encoded_method.code_off as usize) < dexfile.len() {
                         let (code_item, _code_bytes_read) =
@@ -369,38 +262,39 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<Stats> {
 
                         // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
                         let instruction_bytes = code_item.insns.len() * 2;
-                        metrics.add_method(instructions.len() as u64, instruction_bytes as u64);
+                        bytes += instruction_bytes;
                     } else {
                         warn!(
                             "Method code_off 0x{:x} is out of bounds for {}",
                             encoded_method.code_off, method_full_name
                         );
-                        writeln!(writer, "  (Error: Code offset out of bounds)")?;
                     }
                 } else if should_disassemble {
-                    writeln!(
-                        writer,
-                        "\n### Method: {} (Index: {}, Abstract or Native)",
-                        method_full_name, method_id_index
-                    )?;
                 }
             } else {
                 warn!(
                     "Invalid method_id_index {} derived for class {}",
                     method_id_index, class_name
                 );
-                writeln!(
-                    writer,
-                    "# (Error: Invalid method index {})",
-                    method_id_index
-                )?;
             }
         }
     }
+    let elapsed = now.elapsed();
 
-    writer.flush()?;
-    info!("Disassembly dump complete: {}", output_path.display());
-    Ok(metrics)
+    if cli.show_stats {
+        let elapsed_ms = elapsed.as_millis();
+
+        // Avoid division by zero
+        if elapsed_ms > 0 {
+            let bytes_per_ms = bytes as f64 / elapsed_ms as f64;
+            let bytes_per_sec = bytes_per_ms * 1000.0;
+            let mb_per_sec = bytes_per_sec / (1024.0 * 1024.0);
+            info!("Throughput: {:.2} bytes/second", bytes_per_sec);
+            info!("Throughput: {:.2} MB/second", mb_per_sec);
+        }
+    }
+    info!("Disassembly complete");
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -424,16 +318,8 @@ fn main() -> Result<()> {
                 info!("Successfully parsed DEX structure.");
 
                 // Attempt to dump disassembly if requested with timing measurements
-                let start_time = Instant::now();
                 match dump_disassembly(&dex_struct, first_file, &cli) {
-                    Ok(mut metrics) => {
-                        let elapsed = start_time.elapsed();
-                        metrics.set_duration(elapsed);
-
-                        if cli.show_stats {
-                            metrics.report();
-                        }
-                    }
+                    Ok(_) => {}
                     Err(e) => {
                         error!("Failed to dump disassembly: {}", e);
                     }

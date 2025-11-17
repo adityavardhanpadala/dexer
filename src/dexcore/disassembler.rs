@@ -823,8 +823,7 @@ pub fn disassemble_method(
                 let v_aa = (instruction_unit >> 8) & 0xFF;
                 let operand_a = Operand::Register(v_aa);
                 instructions.push(
-                    Instruction::new(opcode, format, address as u32, 1)
-                        .with_operands(&[operand_a]),
+                    Instruction::new(opcode, format, address as u32, 1).with_operands(&[operand_a]),
                 );
                 1
             }
@@ -839,8 +838,7 @@ pub fn disassemble_method(
                 };
                 let operand_a = Operand::Offset(offset_raw);
                 instructions.push(
-                    Instruction::new(opcode, format, address as u32, 1)
-                        .with_operands(&[operand_a]),
+                    Instruction::new(opcode, format, address as u32, 1).with_operands(&[operand_a]),
                 );
                 1
             }
@@ -855,8 +853,7 @@ pub fn disassemble_method(
                 };
                 let operand_a = Operand::Offset(offset_raw);
                 instructions.push(
-                    Instruction::new(opcode, format, address as u32, 2)
-                        .with_operands(&[operand_a]),
+                    Instruction::new(opcode, format, address as u32, 2).with_operands(&[operand_a]),
                 );
                 2
             }
@@ -940,14 +937,28 @@ pub fn disassemble_method(
                 let operand_a = Operand::Register(v_aa);
                 // Determine operand type based on opcode
                 let operand_b = match opcode {
-                    Opcode::CONST_STRING | Opcode::CONST_STRING_JUMBO => Operand::StringId(bbbb as u32),
-                    Opcode::CONST_CLASS | Opcode::CHECK_CAST | Opcode::NEW_INSTANCE => Operand::TypeId(bbbb),
+                    Opcode::CONST_STRING | Opcode::CONST_STRING_JUMBO => {
+                        Operand::StringId(bbbb as u32)
+                    }
+                    Opcode::CONST_CLASS | Opcode::CHECK_CAST | Opcode::NEW_INSTANCE => {
+                        Operand::TypeId(bbbb)
+                    }
                     Opcode::CONST_METHOD_HANDLE => Operand::MethodHandle(bbbb as u32),
                     Opcode::CONST_METHOD_TYPE => Operand::ProtoId(bbbb as u32),
-                    Opcode::SGET | Opcode::SGET_WIDE | Opcode::SGET_OBJECT | Opcode::SGET_BOOLEAN
-                    | Opcode::SGET_BYTE | Opcode::SGET_CHAR | Opcode::SGET_SHORT
-                    | Opcode::SPUT | Opcode::SPUT_WIDE | Opcode::SPUT_OBJECT | Opcode::SPUT_BOOLEAN
-                    | Opcode::SPUT_BYTE | Opcode::SPUT_CHAR | Opcode::SPUT_SHORT => Operand::FieldId(bbbb),
+                    Opcode::SGET
+                    | Opcode::SGET_WIDE
+                    | Opcode::SGET_OBJECT
+                    | Opcode::SGET_BOOLEAN
+                    | Opcode::SGET_BYTE
+                    | Opcode::SGET_CHAR
+                    | Opcode::SGET_SHORT
+                    | Opcode::SPUT
+                    | Opcode::SPUT_WIDE
+                    | Opcode::SPUT_OBJECT
+                    | Opcode::SPUT_BOOLEAN
+                    | Opcode::SPUT_BYTE
+                    | Opcode::SPUT_CHAR
+                    | Opcode::SPUT_SHORT => Operand::FieldId(bbbb),
                     _ => Operand::MethodId(bbbb), // Default fallback
                 };
                 instructions.push(
@@ -1028,15 +1039,32 @@ pub fn disassemble_method(
                 // Determine operand type based on opcode
                 let operand_c = match opcode {
                     Opcode::INSTANCE_OF | Opcode::NEW_ARRAY => Operand::TypeId(cccc),
-                    Opcode::IGET | Opcode::IGET_WIDE | Opcode::IGET_OBJECT | Opcode::IGET_BOOLEAN
-                    | Opcode::IGET_BYTE | Opcode::IGET_CHAR | Opcode::IGET_SHORT
-                    | Opcode::IPUT | Opcode::IPUT_WIDE | Opcode::IPUT_OBJECT | Opcode::IPUT_BOOLEAN
-                    | Opcode::IPUT_BYTE | Opcode::IPUT_CHAR | Opcode::IPUT_SHORT
-                    | Opcode::IGET_QUICK | Opcode::IGET_WIDE_QUICK | Opcode::IGET_OBJECT_QUICK
-                    | Opcode::IPUT_QUICK | Opcode::IPUT_WIDE_QUICK | Opcode::IPUT_OBJECT_QUICK
-                    | Opcode::INVOKE_IPUT_BYTE_QUICK | Opcode::INVOKE_IPUT_SHORT_QUICK
-                    | Opcode::INVOKE_IGET_BOOLEAN_QUICK | Opcode::INVOKE_IGET_BYTE_QUICK
-                    | Opcode::INVOKE_IGET_CHAR_QUICK | Opcode::INVOKE_IGET_SHORT_QUICK => Operand::FieldId(cccc),
+                    Opcode::IGET
+                    | Opcode::IGET_WIDE
+                    | Opcode::IGET_OBJECT
+                    | Opcode::IGET_BOOLEAN
+                    | Opcode::IGET_BYTE
+                    | Opcode::IGET_CHAR
+                    | Opcode::IGET_SHORT
+                    | Opcode::IPUT
+                    | Opcode::IPUT_WIDE
+                    | Opcode::IPUT_OBJECT
+                    | Opcode::IPUT_BOOLEAN
+                    | Opcode::IPUT_BYTE
+                    | Opcode::IPUT_CHAR
+                    | Opcode::IPUT_SHORT
+                    | Opcode::IGET_QUICK
+                    | Opcode::IGET_WIDE_QUICK
+                    | Opcode::IGET_OBJECT_QUICK
+                    | Opcode::IPUT_QUICK
+                    | Opcode::IPUT_WIDE_QUICK
+                    | Opcode::IPUT_OBJECT_QUICK
+                    | Opcode::INVOKE_IPUT_BYTE_QUICK
+                    | Opcode::INVOKE_IPUT_SHORT_QUICK
+                    | Opcode::INVOKE_IGET_BOOLEAN_QUICK
+                    | Opcode::INVOKE_IGET_BYTE_QUICK
+                    | Opcode::INVOKE_IGET_CHAR_QUICK
+                    | Opcode::INVOKE_IGET_SHORT_QUICK => Operand::FieldId(cccc),
                     _ => Operand::TypeId(cccc), // Default fallback
                 };
                 instructions.push(
@@ -1071,8 +1099,7 @@ pub fn disassemble_method(
                 };
                 let operand_a = Operand::Offset(offset_raw);
                 instructions.push(
-                    Instruction::new(opcode, format, address as u32, 3)
-                        .with_operands(&[operand_a]),
+                    Instruction::new(opcode, format, address as u32, 3).with_operands(&[operand_a]),
                 );
                 3
             }
@@ -1168,15 +1195,17 @@ pub fn disassemble_method(
                 match v_a {
                     5 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_g,
+                            ]),
                         );
                         3
                     }
                     4 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_b,
+                            ]),
                         );
                         3
                     }
@@ -1243,15 +1272,17 @@ pub fn disassemble_method(
                 match v_a {
                     5 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g, operand_b]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_g, operand_b,
+                            ]),
                         );
                         3
                     }
                     4 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_b,
+                            ]),
                         );
                         3
                     }
@@ -1310,15 +1341,17 @@ pub fn disassemble_method(
                 match v_a {
                     5 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_g, operand_b]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_g, operand_b,
+                            ]),
                         );
                         3
                     }
                     4 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 3)
-                                .with_operands(&[operand_c, operand_d, operand_e, operand_f, operand_b]),
+                            Instruction::new(opcode, format, address as u32, 3).with_operands(&[
+                                operand_c, operand_d, operand_e, operand_f, operand_b,
+                            ]),
                         );
                         3
                     }
@@ -1372,7 +1405,10 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_a = Operand::RegisterRange {
+                    start: cccc,
+                    end: cccc + v_a - 1,
+                };
                 let operand_b = Operand::MethodId(bbbb);
                 instructions.push(
                     Instruction::new(opcode, format, address as u32, 3)
@@ -1396,7 +1432,10 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_a = Operand::RegisterRange {
+                    start: cccc,
+                    end: cccc + v_a - 1,
+                };
                 let operand_b = Operand::Vtaboff(bbbb as u32);
                 instructions.push(
                     Instruction::new(opcode, format, address as u32, 3)
@@ -1420,7 +1459,10 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_a = Operand::RegisterRange {
+                    start: cccc,
+                    end: cccc + v_a - 1,
+                };
                 let operand_b = Operand::MethodId(bbbb);
                 instructions.push(
                     Instruction::new(opcode, format, address as u32, 3)
@@ -1475,20 +1517,24 @@ pub fn disassemble_method(
                 match v_a {
                     5 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 4)
-                                .with_operands(&[operand_d, operand_e, operand_f, operand_g, operand_h, operand_b, operand_c]),
+                            Instruction::new(opcode, format, address as u32, 4).with_operands(&[
+                                operand_d, operand_e, operand_f, operand_g, operand_h, operand_b,
+                                operand_c,
+                            ]),
                         );
                     }
                     4 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 4)
-                                .with_operands(&[operand_d, operand_e, operand_f, operand_g, operand_b, operand_c]),
+                            Instruction::new(opcode, format, address as u32, 4).with_operands(&[
+                                operand_d, operand_e, operand_f, operand_g, operand_b, operand_c,
+                            ]),
                         );
                     }
                     3 => {
                         instructions.push(
-                            Instruction::new(opcode, format, address as u32, 4)
-                                .with_operands(&[operand_d, operand_e, operand_f, operand_b, operand_c]),
+                            Instruction::new(opcode, format, address as u32, 4).with_operands(&[
+                                operand_d, operand_e, operand_f, operand_b, operand_c,
+                            ]),
                         );
                     }
                     2 => {
@@ -1529,7 +1575,10 @@ pub fn disassemble_method(
                     registers_str.push_str(&(cccc + i).to_string());
                 }
 
-                let operand_a = Operand::RegisterRange { start: cccc, end: cccc + v_a - 1 };
+                let operand_a = Operand::RegisterRange {
+                    start: cccc,
+                    end: cccc + v_a - 1,
+                };
                 let operand_b = Operand::MethodId(bbbb);
                 let operand_c = Operand::ProtoId(hhhh as u32);
                 instructions.push(
