@@ -2,24 +2,18 @@ mod dexcore;
 
 use pico_args::Arguments;
 use std::error::Error;
+use std::fs;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use memmap::{Mmap, MmapOptions};
 use simple_logger::SimpleLogger;
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufReader, BufWriter, Write},
-    path::PathBuf,
-    time::{Duration, Instant},
-    usize,
-};
+use std::{collections::HashMap, fs::File, path::PathBuf, time::Instant, usize};
 
-use crate::dexcore::Dex;
-use crate::dexcore::disassembler::disassemble_method;
-use crate::dexcore::utils::{get_method_signature, parse_class_data_item, parse_code_item};
+use crate::dexcore::disassembler::disassemble_class;
+use crate::dexcore::{Dex, disassembler::Instruction};
+use rayon::prelude::*;
 
 /// Command line arguments
 #[derive(Debug)]
@@ -100,191 +94,50 @@ fn mmap_files(fpaths: &[PathBuf]) -> Result<Vec<Mmap>> {
 fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<()> {
     info!("Starting disassembly dump...");
 
-    let mut method_idx_counter: u32; // Track method index diff accumulation
     let now = Instant::now();
+
+    // Process classes in parallel with batches of 100
+    let results: Vec<_> = dex
+        .class_defs
+        .par_chunks(100)
+        .flat_map(|batch| {
+            batch
+                .iter()
+                .filter_map(|class_def| {
+                    let class_name = dex.type_map.get(class_def.class_idx as usize)?;
+
+                    match disassemble_class(dex, dexfile, *class_def, cli) {
+                        Ok((dism, num_bytes)) => {
+                            if !dism.is_empty() {
+                                Some((class_name.clone(), dism, num_bytes))
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to disassemble class {}: {:?}", class_name, e);
+                            None
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    // Collect results into class_dism HashMap
+    let mut class_dism: HashMap<String, HashMap<String, Vec<Instruction>>> = HashMap::new();
     let mut bytes: usize = 0;
-    for (i, class_def) in dex.class_defs.iter().enumerate() {
-        let class_name = dex
-            .type_map
-            .get(class_def.class_idx as usize)
-            .cloned()
-            .unwrap_or_else(|| format!("UnknownClass{}", i));
 
-        if class_def.class_data_off == 0 {
-            continue;
-        }
-
-        if (class_def.class_data_off as usize) >= dexfile.len() {
-            // Error: Class data offset out of bounds"
-            debug!("Class data offset out of file bounds");
-            continue;
-        }
-
-        let (class_data, _bytes_read) =
-            parse_class_data_item(dexfile, class_def.class_data_off as usize);
-
-        // --- Process Direct Methods ---
-        method_idx_counter = 0; // Reset for direct methods
-        for encoded_method in &class_data.direct_methods {
-            method_idx_counter = method_idx_counter.wrapping_add(encoded_method.method_idx_diff); // Accumulate diff
-            let method_id_index = method_idx_counter as usize;
-
-            if let Some(method_id) = dex.method_ids.get(method_id_index) {
-                // Get the actual proto_id_item needed by the utils function
-                let proto_item =
-                    dex.proto_ids
-                        .get(method_id.proto_idx as usize)
-                        .ok_or_else(|| {
-                            format!(
-                                "Proto ID index {} out of bounds for method index {}",
-                                method_id.proto_idx, method_id_index
-                            )
-                        })?;
-                // Call the function from utils
-                let method_sig =
-                    get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                        .map_err(|e| {
-                            format!(
-                                "Failed to get method signature for method index {}: {}",
-                                method_id_index, e
-                            )
-                        })?;
-
-                // Get method name from string_ids
-                let method_name_offset = dex
-                    .string_ids
-                    .get(method_id.name_idx as usize)
-                    .copied()
-                    .unwrap_or(0);
-                let method_name = dex
-                    .string_map
-                    .get(&method_name_offset)
-                    .cloned()
-                    .unwrap_or_else(|| "<unknown>".to_string());
-
-                // Combine method name with signature: methodName(Signature)
-                let method_full_name = format!("{}{}", method_name, method_sig);
-
-                let should_disassemble =
-                    cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
-
-                if should_disassemble && encoded_method.code_off != 0 {
-                    // Ensure code offset is within bounds
-                    if (encoded_method.code_off as usize) < dexfile.len() {
-                        let (code_item, _code_bytes_read) =
-                            parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let instructions = disassemble_method(
-                            &code_item,
-                            dex.string_ids, // Pass the slice of string offsets
-                            &dex.string_map,
-                            &dex.type_map,
-                            Some(&class_name),
-                            Some(&method_full_name),
-                        )?;
-
-                        // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
-                        let instruction_bytes = code_item.insns.len() * 2;
-                        bytes += instruction_bytes;
-                    } else {
-                        warn!(
-                            "Method code_off 0x{:x} is out of bounds for {}",
-                            encoded_method.code_off, method_full_name
-                        );
-                    }
-                } else if should_disassemble {
-                }
-            } else {
-                warn!(
-                    "Invalid method_id_index {} derived for class {}",
-                    method_id_index, class_name
-                );
-            }
-        }
-
-        // --- Process Virtual Methods ---
-        method_idx_counter = 0; // Reset for virtual methods
-        for encoded_method in &class_data.virtual_methods {
-            method_idx_counter = method_idx_counter.wrapping_add(encoded_method.method_idx_diff); // Accumulate diff
-            let method_id_index = method_idx_counter as usize;
-
-            if let Some(method_id) = dex.method_ids.get(method_id_index) {
-                // Get the actual proto_id_item needed by the utils function
-                let proto_item =
-                    dex.proto_ids
-                        .get(method_id.proto_idx as usize)
-                        .ok_or_else(|| {
-                            format!(
-                                "Proto ID index {} out of bounds for method index {}",
-                                method_id.proto_idx, method_id_index
-                            )
-                        })?;
-                // Call the function from utils
-                let method_sig =
-                    get_method_signature(dexfile, proto_item, dex.string_ids, dex.type_ids)
-                        .map_err(|e| {
-                            format!(
-                                "Failed to get method signature for method index {}: {}",
-                                method_id_index, e
-                            )
-                        })?;
-
-                // Get method name from string_ids
-                let method_name_offset = dex
-                    .string_ids
-                    .get(method_id.name_idx as usize)
-                    .copied()
-                    .unwrap_or(0);
-                let method_name = dex
-                    .string_map
-                    .get(&method_name_offset)
-                    .cloned()
-                    .unwrap_or_else(|| "<unknown>".to_string());
-
-                // Combine method name with signature: methodName(Signature)
-                let method_full_name = format!("{}{}", method_name, method_sig);
-
-                let should_disassemble =
-                    cli.method.is_none() || cli.method.as_deref() == Some(&method_sig);
-
-                if should_disassemble && encoded_method.code_off != 0 {
-                    // Ensure code offset is within bounds
-                    if (encoded_method.code_off as usize) < dexfile.len() {
-                        let (code_item, _code_bytes_read) =
-                            parse_code_item(dexfile, encoded_method.code_off as usize);
-                        let instructions = disassemble_method(
-                            &code_item,
-                            dex.string_ids, // Pass the slice of string offsets
-                            &dex.string_map,
-                            &dex.type_map,
-                            Some(&class_name),
-                            Some(&method_full_name),
-                        )?;
-
-                        // Calculate instruction bytes (each instruction is 2 bytes minimum in Dalvik)
-                        let instruction_bytes = code_item.insns.len() * 2;
-                        bytes += instruction_bytes;
-                    } else {
-                        warn!(
-                            "Method code_off 0x{:x} is out of bounds for {}",
-                            encoded_method.code_off, method_full_name
-                        );
-                    }
-                } else if should_disassemble {
-                }
-            } else {
-                warn!(
-                    "Invalid method_id_index {} derived for class {}",
-                    method_id_index, class_name
-                );
-            }
-        }
+    for (class_name, dism, num_bytes) in results {
+        class_dism.insert(class_name, dism);
+        bytes += num_bytes;
     }
+
     let elapsed = now.elapsed();
 
     if cli.show_stats {
         let elapsed_ms = elapsed.as_millis();
 
-        // Avoid division by zero
         if elapsed_ms > 0 {
             let bytes_per_ms = bytes as f64 / elapsed_ms as f64;
             let bytes_per_sec = bytes_per_ms * 1000.0;
@@ -293,6 +146,27 @@ fn dump_disassembly(dex: &Dex, dexfile: &Mmap, cli: &Cli) -> Result<()> {
             info!("Throughput: {:.2} MB/second", mb_per_sec);
         }
     }
+
+    // Write the disassembly to cli.output without debug fmt
+    let mut output = String::new();
+    for (class_name, methods) in &class_dism {
+        output.push_str(&format!("Class: {}\n", class_name));
+        for (method_name, instructions) in methods {
+            output.push_str(&format!("  Method: {}\n", method_name));
+            for instr in instructions {
+                output.push_str(&format!("    {:?}\n", instr));
+            }
+        }
+        output.push('\n');
+    }
+
+    let output_path = cli
+        .output
+        .as_ref()
+        .map(|p| p.as_path())
+        .unwrap_or_else(|| std::path::Path::new("disassembly.txt"));
+    fs::write(output_path, output)?;
+
     info!("Disassembly complete");
     Ok(())
 }
